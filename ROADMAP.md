@@ -39,7 +39,7 @@ This document outlines the planned evolutionary stages of **ServQueue** to evolv
 
 ## Phase 5: Deep Ecosystem Integration
 - [x] **Serv-lang Dedicated Protocol Driver**: Expand `runtime/broker.go` with a dedicated `servqueue://` driver that supports natively uploading WASM binaries, custom authentication schemas, and advanced queue options directly from `.srv` code.
-- [ ] **ServConsole Integration**: Feed broker throughput, active subscriptions, and WASM performance stats directly to the central Serv dashboard.
-- [ ] **Auto trace propagation**: Automatically pass trace context seamlessly into the WASM transform runtime environments.
+- [x] **ServConsole Integration**: Feed broker throughput, active subscriptions, and WASM performance stats directly to the central Serv dashboard.
+- [x] **Auto trace propagation**: Automatically pass trace context seamlessly into the WASM transform runtime environments.
 
 
