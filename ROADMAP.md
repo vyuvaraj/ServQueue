@@ -45,7 +45,7 @@ This document outlines the planned evolutionary stages of **ServQueue** to evolv
 ---
 
 ## Phase 6: Enterprise Features & Advanced Queueing ⚠️ High Priority
-- [ ] **Dead Letter Queues (DLQ)**: Automatically route messages failing WASM transformations or client acknowledgments after max-retries to a dedicated `.dlq` topic. *Critical reliability gap — failed transforms currently drop messages silently.*
+- [x] **Dead Letter Queues (DLQ)**: Automatically route messages failing WASM transformations or client acknowledgments after max-retries to a dedicated `.dlq` topic. *Critical reliability gap — failed transforms currently drop messages silently.*
 - [ ] **Delayed & Scheduled Messages**: Support publishing messages with a delayed delivery parameter (storing in a timed-wheel memory queue).
 - [ ] **Message Deduplication**: Deduplicate incoming publishes within a configured time-window based on unique message IDs to enable idempotent at-least-once delivery.
 

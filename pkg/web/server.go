@@ -30,7 +30,7 @@ func NewServer(addr string, engine *broker.BrokerEngine, authToken, tlsCert, tls
 
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/topics/", s.authorize(s.handleRegisterTransform))
+	mux.HandleFunc("/api/topics/", s.authorize(s.handleTopics))
 	mux.HandleFunc("/api/publish", s.authorize(s.handlePublish))
 	mux.HandleFunc("/api/stats", s.authorize(s.handleStats))
 	mux.HandleFunc("/api/replay", s.authorize(s.handleReplay))
@@ -64,18 +64,29 @@ func (s *Server) authorize(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (s *Server) handleRegisterTransform(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleTopics(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) < 4 {
+		http.Error(w, "Invalid path. Use /api/topics/{topic}/transform or /api/topics/{topic}/dlq", http.StatusBadRequest)
+		return
+	}
+	topic := parts[2]
+	action := parts[3]
+
+	if action == "transform" {
+		s.handleRegisterTransform(w, r, topic)
+	} else if action == "dlq" {
+		s.handleRegisterDLQ(w, r, topic)
+	} else {
+		http.Error(w, "Not found", http.StatusNotFound)
+	}
+}
+
+func (s *Server) handleRegisterTransform(w http.ResponseWriter, r *http.Request, topic string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	parts := strings.Split(r.URL.Path, "/")
-	if len(parts) < 4 {
-		http.Error(w, "Invalid path. Use /api/topics/{topic}/transform", http.StatusBadRequest)
-		return
-	}
-	topic := parts[3]
 
 	wasmBytes, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -97,6 +108,31 @@ func (s *Server) handleRegisterTransform(w http.ResponseWriter, r *http.Request)
 	}
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("WASM transform registered for topic " + topic))
+}
+
+func (s *Server) handleRegisterDLQ(w http.ResponseWriter, r *http.Request, topic string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		DLQTopic string `json:"dlq_topic"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Bad request: JSON body required", http.StatusBadRequest)
+		return
+	}
+
+	if req.DLQTopic == "" {
+		http.Error(w, "Missing dlq_topic", http.StatusBadRequest)
+		return
+	}
+
+	s.engine.SetDLQ(topic, req.DLQTopic)
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("DLQ " + req.DLQTopic + " registered for topic " + topic))
 }
 
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {

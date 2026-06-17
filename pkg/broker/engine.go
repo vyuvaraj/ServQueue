@@ -30,6 +30,7 @@ type BrokerEngine struct {
 	topics      map[string][]chan string
 	partitions  map[string]map[int][]chan string // Topic -> PartitionID -> SubChannels
 	transforms  map[string]wazero.CompiledModule
+	dlqTopics   map[string]string                // Topic -> DLQ topic name
 	wasmManager *WasmManager
 	Metrics     BrokerMetrics
 	wal         *storage.WAL
@@ -52,6 +53,7 @@ func NewBrokerEngine() *BrokerEngine {
 		topics:      make(map[string][]chan string),
 		partitions:  make(map[string]map[int][]chan string),
 		transforms:  make(map[string]wazero.CompiledModule),
+		dlqTopics:   make(map[string]string),
 		wasmManager: mgr,
 		wal:         wal,
 	}
@@ -84,6 +86,51 @@ func (e *BrokerEngine) SetRaftNode(node interface{}) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.raftNode = node
+}
+
+// SetDLQ registers a dead letter queue topic for a source topic.
+// When a WASM transform fails for the source topic, the original
+// payload is routed to the DLQ topic instead of being silently dropped.
+func (e *BrokerEngine) SetDLQ(topic string, dlqTopic string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.dlqTopics[topic] = dlqTopic
+}
+
+// GetDLQ returns the DLQ topic registered for a given source topic, if any.
+func (e *BrokerEngine) GetDLQ(topic string) (string, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	dlq, ok := e.dlqTopics[topic]
+	return dlq, ok
+}
+
+// routeToDLQ publishes payload to the DLQ topic if one is registered,
+// incrementing the DLQ delivery counter.
+func (e *BrokerEngine) routeToDLQ(ctx context.Context, sourceTopic string, payload string, reason string) {
+	dlqTopic, ok := e.GetDLQ(sourceTopic)
+	if !ok {
+		// No DLQ configured — message is dropped (legacy behaviour)
+		return
+	}
+
+	envelope := fmt.Sprintf(`{"dlq":true,"source_topic":%q,"reason":%q,"payload":%q}`,
+		sourceTopic, reason, payload)
+
+	// Deliver directly to DLQ subscribers without running transforms
+	e.mu.RLock()
+	subs := e.topics[dlqTopic]
+	e.mu.RUnlock()
+	for _, sub := range subs {
+		select {
+		case sub <- envelope:
+		default:
+		}
+	}
+	atomic.AddUint64(&e.Metrics.MessagesPublished, 1)
+	if e.wal != nil {
+		_ = e.wal.Append(dlqTopic, envelope)
+	}
 }
 
 // Subscribe adds a subscriber channel to a topic
@@ -211,6 +258,7 @@ func (e *BrokerEngine) PublishPartition(ctx context.Context, topic string, key s
 		if err != nil {
 			atomic.AddUint64(&e.Metrics.WasmExecutionErrors, 1)
 			otel.EndSpan(span, err, map[string]interface{}{})
+			e.routeToDLQ(ctx, topic, payload, err.Error())
 			return payload, err
 		}
 	}
@@ -281,6 +329,7 @@ func (e *BrokerEngine) Publish(ctx context.Context, topic string, payload string
 			otel.EndSpan(span, err, map[string]interface{}{
 				"messaging.destination": topic,
 			})
+			e.routeToDLQ(ctx, topic, payload, err.Error())
 			return payload, err
 		}
 	}
@@ -339,6 +388,7 @@ func (e *BrokerEngine) publishLocal(ctx context.Context, topic string, payload s
 
 		if err != nil {
 			otel.EndSpan(span, err, map[string]interface{}{})
+			e.routeToDLQ(ctx, topic, payload, err.Error())
 			return payload, err
 		}
 	}
