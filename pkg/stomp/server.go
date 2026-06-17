@@ -116,7 +116,8 @@ func readFrame(reader *bufio.Reader) (*Frame, error) {
 
 func writeFrame(writer io.Writer, command string, headers map[string]string, body string) error {
 	var buf bytes.Buffer
-	buf.WriteString(command + "\n")
+	buf.WriteString(command)
+	buf.WriteByte('\n')
 	for k, v := range headers {
 		buf.WriteString(fmt.Sprintf("%s:%s\n", k, v))
 	}

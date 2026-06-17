@@ -88,11 +88,12 @@ func (s *Server) handleTopics(w http.ResponseWriter, r *http.Request) {
 	topic := parts[2]
 	action := parts[3]
 
-	if action == "transform" {
+	switch action {
+	case "transform":
 		s.handleRegisterTransform(w, r, topic)
-	} else if action == "dlq" {
+	case "dlq":
 		s.handleRegisterDLQ(w, r, topic)
-	} else {
+	default:
 		http.Error(w, "Not found", http.StatusNotFound)
 	}
 }

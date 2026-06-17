@@ -127,6 +127,8 @@ func (e *BrokerEngine) routeToDLQ(ctx context.Context, sourceTopic string, paylo
 	for _, sub := range subs {
 		select {
 		case sub <- envelope:
+		case <-ctx.Done():
+			return
 		default:
 		}
 	}
