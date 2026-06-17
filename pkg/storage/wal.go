@@ -17,9 +17,12 @@ type LogEntry struct {
 }
 
 type WAL struct {
-	file *os.File
-	mu   sync.Mutex
-	path string
+	file       *os.File
+	mu         sync.Mutex
+	path       string
+	maxSize    int64
+	bytesWrit  int64
+	OnRotate   func(closedPath string)
 }
 
 func OpenWAL(path string) (*WAL, error) {
@@ -28,21 +31,54 @@ func OpenWAL(path string) (*WAL, error) {
 		return nil, fmt.Errorf("wal: open failed: %w", err)
 	}
 
+	info, err := file.Stat()
+	var size int64
+	if err == nil {
+		size = info.Size()
+	}
+
 	return &WAL{
-		file: file,
-		path: path,
+		file:    file,
+		path:    path,
+		maxSize: 10 * 1024 * 1024, // 10 MB default segment threshold
+		bytesWrit: size,
 	}, nil
+}
+
+func (w *WAL) SetMaxSize(size int64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.maxSize = size
 }
 
 func (w *WAL) Append(topic, payload string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	// Perform segment rotation if threshold reached
+	if w.bytesWrit >= w.maxSize {
+		_ = w.file.Sync()
+		_ = w.file.Close()
+
+		rotatedPath := fmt.Sprintf("%s.%d", w.path, time.Now().UnixNano())
+		_ = os.Rename(w.path, rotatedPath)
+
+		file, err := os.OpenFile(w.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0666)
+		if err != nil {
+			return fmt.Errorf("wal: rotation open failed: %w", err)
+		}
+		w.file = file
+		w.bytesWrit = 0
+
+		if w.OnRotate != nil {
+			go w.OnRotate(rotatedPath)
+		}
+	}
+
 	timestamp := time.Now().UnixNano()
 	topicBytes := []byte(topic)
 	payloadBytes := []byte(payload)
 
-	// Binary frame layout:
 	// [TopicLength (4B)][PayloadLength (4B)][Timestamp (8B)][TopicBytes][PayloadBytes][SHA256Checksum (32B)]
 	header := make([]byte, 16)
 	binary.BigEndian.PutUint32(header[0:4], uint32(len(topicBytes)))
@@ -61,9 +97,11 @@ func (w *WAL) Append(topic, payload string) error {
 	frame.Write(payloadBytes)
 	frame.Write(checksum)
 
-	if _, err := w.file.Write(frame.Bytes()); err != nil {
+	written, err := w.file.Write(frame.Bytes())
+	if err != nil {
 		return fmt.Errorf("wal: append write failed: %w", err)
 	}
+	w.bytesWrit += int64(written)
 
 	if err := w.file.Sync(); err != nil {
 		return fmt.Errorf("wal: append sync failed: %w", err)
