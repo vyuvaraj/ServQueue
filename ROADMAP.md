@@ -46,7 +46,7 @@ This document outlines the planned evolutionary stages of **ServQueue** to evolv
 
 ## Phase 6: Enterprise Features & Advanced Queueing ⚠️ High Priority
 - [x] **Dead Letter Queues (DLQ)**: Automatically route messages failing WASM transformations or client acknowledgments after max-retries to a dedicated `.dlq` topic. *Critical reliability gap — failed transforms currently drop messages silently.*
-- [ ] **Delayed & Scheduled Messages**: Support publishing messages with a delayed delivery parameter (storing in a timed-wheel memory queue).
+- [x] **Delayed & Scheduled Messages**: Support publishing messages with a delayed delivery parameter (storing in a timed-wheel memory queue).
 - [x] **Message Deduplication**: Deduplicate incoming publishes within a configured time-window based on unique message IDs to enable idempotent at-least-once delivery.
 
 ---
@@ -69,7 +69,7 @@ This document outlines the planned evolutionary stages of **ServQueue** to evolv
 | 8.5 | **Rate limiting on publish endpoint** | Small | Protect `POST /api/publish` against flooding — currently unthrottled. | [ ] |
 | 8.6 | **CI/CD pipeline (GitHub Actions)** | Small | Automated build, test, and format checks on every PR. Currently missing. | [x] |
 | 8.7 | **WebSocket push for real-time metrics** | Medium | Push live throughput, subscriber counts, and WASM execution stats to ServConsole via WebSocket. | [ ] |
-| 8.8 | **Consumer group support** | Large | Multiple subscribers in a consumer group with partition assignment — enables horizontal scaling of message consumers. | [ ] |
+| 8.8 | **Consumer group support** | Large | Multiple subscribers in a consumer group with partition assignment — enables horizontal scaling of message consumers. | [x] |
 | 8.9 | **Message priority levels** | Medium | Support priority tiers on publish so high-priority messages are delivered ahead of low-priority ones. | [ ] |
 
 ---

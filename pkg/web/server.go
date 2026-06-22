@@ -14,6 +14,8 @@ import (
 
 	"servqueue/pkg/broker"
 	"servqueue/pkg/storage"
+
+	"github.com/vyuvaraj/ServShared"
 )
 
 type Server struct {
@@ -37,14 +39,8 @@ func NewServer(addr string, engine *broker.BrokerEngine, authToken, tlsCert, tls
 
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"healthy"}`))
-	})
-	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"healthy"}`))
-	})
+	mux.HandleFunc("/healthz", ServShared.HealthzHandler)
+	mux.HandleFunc("/readyz", ServShared.ReadyzHandler)
 	mux.HandleFunc("/api/topics/", s.authorize(s.handleTopics))
 	mux.HandleFunc("/api/v1/topics/", s.authorize(s.handleTopics))
 	mux.HandleFunc("/api/topics", s.authorize(s.handleListTopics))
