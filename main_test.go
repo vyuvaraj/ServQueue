@@ -813,5 +813,148 @@ func TestSchemaValidation(t *testing.T) {
 	}
 }
 
+func TestMessageTTL(t *testing.T) {
+	_ = os.Remove("queue.wal")
+	defer os.Remove("queue.wal")
+
+	engine := broker.NewBrokerEngine()
+	defer engine.Stop()
+
+	topic := "ttl-test-topic"
+	dlqTopic := "ttl-dlq-topic"
+
+	// Register DLQ
+	engine.SetDLQ(topic, dlqTopic)
+
+	// Subscribe to DLQ to see if it gets the expired message
+	dlqSub := engine.Subscribe(dlqTopic)
+	defer engine.Unsubscribe(dlqTopic, dlqSub)
+
+	// Publish with a short TTL (10ms)
+	ctx := context.WithValue(context.Background(), "ttl-ms", 10)
+	_, err := engine.Publish(ctx, topic, "expired-payload")
+	if err != nil {
+		t.Fatalf("Publish failed: %v", err)
+	}
+
+	// Sleep 20ms to allow TTL to expire
+	time.Sleep(20 * time.Millisecond)
+
+	// Now subscribe to the actual topic - the message should be expired and not delivered
+	sub := engine.Subscribe(topic)
+	defer engine.Unsubscribe(topic, sub)
+
+	select {
+	case msg := <-sub:
+		t.Fatalf("Received expired message on topic: %s", msg)
+	case <-time.After(100 * time.Millisecond):
+		// Success, not delivered
+	}
+
+	// But it should have been routed to DLQ!
+	select {
+	case msg := <-dlqSub:
+		if !strings.Contains(msg, "message TTL expired") {
+			t.Errorf("Expected DLQ message to contain expiration reason, got: %s", msg)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Expired message was not routed to DLQ")
+	}
+}
+
+func TestBackpressure(t *testing.T) {
+	_ = os.Remove("queue.wal")
+	defer os.Remove("queue.wal")
+
+	os.Setenv("SERVQUEUE_BACKPRESSURE_LIMIT", "2")
+	defer os.Unsetenv("SERVQUEUE_BACKPRESSURE_LIMIT")
+
+	engine := broker.NewBrokerEngine()
+	defer engine.Stop()
+
+	topic := "backpressure-test"
+
+	// Publish 2 messages to fill the queue (since no subscribers are active)
+	_, err := engine.Publish(context.Background(), topic, "msg1")
+	if err != nil {
+		t.Fatalf("First publish failed: %v", err)
+	}
+	_, err = engine.Publish(context.Background(), topic, "msg2")
+	if err != nil {
+		t.Fatalf("Second publish failed: %v", err)
+	}
+
+	// Third publish should fail with backpressure active
+	_, err = engine.Publish(context.Background(), topic, "msg3")
+	if err == nil || !strings.Contains(err.Error(), "backpressure active") {
+		t.Fatalf("Expected backpressure error, got: %v", err)
+	}
+}
+
+func TestWildcardSubscriptions(t *testing.T) {
+	_ = os.Remove("queue.wal")
+	defer os.Remove("queue.wal")
+
+	engine := broker.NewBrokerEngine()
+	defer engine.Stop()
+
+	// Subscribers with wildcards
+	subSingle := engine.Subscribe("orders.*")
+	defer engine.Unsubscribe("orders.*", subSingle)
+
+	subMulti := engine.Subscribe("orders.#")
+	defer engine.Unsubscribe("orders.#", subMulti)
+
+	// Publish to orders.us (should match both)
+	_, err := engine.Publish(context.Background(), "orders.us", "order1")
+	if err != nil {
+		t.Fatalf("Publish failed: %v", err)
+	}
+
+	// Verify both got it
+	select {
+	case msg := <-subSingle:
+		if msg != "order1" {
+			t.Errorf("orders.* expected 'order1', got %s", msg)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("orders.* timeout")
+	}
+
+	select {
+	case msg := <-subMulti:
+		if msg != "order1" {
+			t.Errorf("orders.# expected 'order1', got %s", msg)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("orders.# timeout")
+	}
+
+	// Publish to orders.us.east (should match only orders.#)
+	_, err = engine.Publish(context.Background(), "orders.us.east", "order2")
+	if err != nil {
+		t.Fatalf("Publish failed: %v", err)
+	}
+
+	// verify orders.# got it
+	select {
+	case msg := <-subMulti:
+		if msg != "order2" {
+			t.Errorf("orders.# expected 'order2', got %s", msg)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("orders.# timeout for order2")
+	}
+
+	// Verify orders.* did NOT get it
+	select {
+	case msg := <-subSingle:
+		t.Fatalf("orders.* unexpectedly received message: %s", msg)
+	case <-time.After(100 * time.Millisecond):
+		// Success
+	}
+}
+
+
 
 

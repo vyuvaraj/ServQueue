@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -162,19 +163,39 @@ func (e *BrokerEngine) dispatchLoop(ctx context.Context, topic string, pq *Prior
 			return
 		default:
 			e.mu.RLock()
-			hasSubs := len(e.topics[topic]) > 0
+			hasSubs := false
+			for pattern, patternSubs := range e.topics {
+				if len(patternSubs) > 0 && matchTopic(pattern, topic) {
+					hasSubs = true
+					break
+				}
+			}
 			if !hasSubs {
-				for _, pSubs := range e.partitions[topic] {
-					if len(pSubs) > 0 {
-						hasSubs = true
+				for pattern, partsMap := range e.partitions {
+					if matchTopic(pattern, topic) {
+						for _, pSubs := range partsMap {
+							if len(pSubs) > 0 {
+								hasSubs = true
+								break
+							}
+						}
+					}
+					if hasSubs {
 						break
 					}
 				}
 			}
 			if !hasSubs {
-				for _, gSubs := range e.groupSubs[topic] {
-					if len(gSubs) > 0 {
-						hasSubs = true
+				for pattern, gSubsMap := range e.groupSubs {
+					if matchTopic(pattern, topic) {
+						for _, gSubs := range gSubsMap {
+							if len(gSubs) > 0 {
+								hasSubs = true
+								break
+							}
+						}
+					}
+					if hasSubs {
 						break
 					}
 				}
@@ -200,17 +221,33 @@ func (e *BrokerEngine) dispatchLoop(ctx context.Context, topic string, pq *Prior
 				}
 			}
 
+			// Expiry / TTL Check
+			if !msg.Expiry.IsZero() && time.Now().After(msg.Expiry) {
+				e.routeToDLQ(ctx, topic, msg.Payload, "message TTL expired")
+				continue
+			}
+
 			e.mu.RLock()
-			subs := e.topics[topic]
-			partsMap, exists := e.partitions[topic]
+			var subs []chan string
+			for pattern, patternSubs := range e.topics {
+				if matchTopic(pattern, topic) {
+					subs = append(subs, patternSubs...)
+				}
+			}
 			var partitionSubs []chan string
-			if exists {
-				partitionSubs = partsMap[msg.PartitionId]
+			for pattern, partsMap := range e.partitions {
+				if matchTopic(pattern, topic) {
+					if chs, ok := partsMap[msg.PartitionId]; ok {
+						partitionSubs = append(partitionSubs, chs...)
+					}
+				}
 			}
 			groupsMap := make(map[string][]chan string)
-			if e.groupSubs[topic] != nil {
-				for gName, gSubs := range e.groupSubs[topic] {
-					groupsMap[gName] = gSubs
+			for pattern, gSubsMap := range e.groupSubs {
+				if matchTopic(pattern, topic) {
+					for gName, gSubs := range gSubsMap {
+						groupsMap[gName] = append(groupsMap[gName], gSubs...)
+					}
 				}
 			}
 			e.mu.RUnlock()
@@ -492,6 +529,18 @@ func (e *BrokerEngine) RegisterTransform(ctx context.Context, topic string, wasm
 
 // PublishPartition hashes the key to dispatch messages to a specific partitioned queue
 func (e *BrokerEngine) PublishPartition(ctx context.Context, topic string, key string, payload string) (string, error) {
+	// Backpressure check
+	pq := e.getOrCreateQueue(topic)
+	limit := 1000
+	if limitStr := os.Getenv("SERVQUEUE_BACKPRESSURE_LIMIT"); limitStr != "" {
+		if parsed, err := strconv.Atoi(limitStr); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	if pq.Len() >= limit {
+		return "", fmt.Errorf("queue capacity exceeded: backpressure active")
+	}
+
 	if schema, ok := e.GetSchema(topic); ok {
 		if err := ValidatePayload(payload, schema); err != nil {
 			return payload, fmt.Errorf("schema validation failed: %w", err)
@@ -556,8 +605,8 @@ func (e *BrokerEngine) PublishPartition(ctx context.Context, topic string, key s
 		}
 	}
 
-	pq := e.getOrCreateQueue(topic)
-	pq.Push(processed, priority, partitionId)
+	expiry := getExpiryFromContext(ctx)
+	pq.Push(processed, priority, partitionId, expiry)
 
 	otel.EndSpan(span, nil, map[string]interface{}{})
 	return processed, nil
@@ -567,6 +616,18 @@ func (e *BrokerEngine) PublishPartition(ctx context.Context, topic string, key s
 func (e *BrokerEngine) Publish(ctx context.Context, topic string, payload string) (string, error) {
 	if e.publishLimiter != nil && !e.publishLimiter.Allow() {
 		return "", fmt.Errorf("rate limit exceeded")
+	}
+
+	// Backpressure check
+	pq := e.getOrCreateQueue(topic)
+	limit := 1000
+	if limitStr := os.Getenv("SERVQUEUE_BACKPRESSURE_LIMIT"); limitStr != "" {
+		if parsed, err := strconv.Atoi(limitStr); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	if pq.Len() >= limit {
+		return "", fmt.Errorf("queue capacity exceeded: backpressure active")
 	}
 
 	if schema, ok := e.GetSchema(topic); ok {
@@ -692,8 +753,8 @@ func (e *BrokerEngine) Publish(ctx context.Context, topic string, payload string
 		}
 	}
 
-	pq := e.getOrCreateQueue(topic)
-	pq.Push(processed, priority, 0)
+	expiry := getExpiryFromContext(ctx)
+	pq.Push(processed, priority, 0, expiry)
 
 	otel.EndSpan(span, nil, map[string]interface{}{
 		"messaging.system":      "servqueue",
@@ -742,21 +803,26 @@ func (e *BrokerEngine) publishLocal(ctx context.Context, topic string, payload s
 	}
 
 	e.mu.RLock()
-	subs, exists := e.topics[topic]
+	var subs []chan string
+	for pattern, patternSubs := range e.topics {
+		if matchTopic(pattern, topic) {
+			subs = append(subs, patternSubs...)
+		}
+	}
 	groupsMap := make(map[string][]chan string)
-	if e.groupSubs[topic] != nil {
-		for gName, gSubs := range e.groupSubs[topic] {
-			groupsMap[gName] = gSubs
+	for pattern, gSubsMap := range e.groupSubs {
+		if matchTopic(pattern, topic) {
+			for gName, gSubs := range gSubsMap {
+				groupsMap[gName] = append(groupsMap[gName], gSubs...)
+			}
 		}
 	}
 	e.mu.RUnlock()
 
-	if exists {
-		for _, sub := range subs {
-			select {
-			case sub <- processed:
-			default:
-			}
+	for _, sub := range subs {
+		select {
+		case sub <- processed:
+		default:
 		}
 	}
 
@@ -893,3 +959,62 @@ func (e *BrokerEngine) ReplayMessages(ctx context.Context, topic string, startOf
 
 	return count, nil
 }
+
+func matchTopic(pattern, topic string) bool {
+	if pattern == topic {
+		return true
+	}
+	if pattern == "#" {
+		return true
+	}
+	pParts := strings.Split(pattern, ".")
+	tParts := strings.Split(topic, ".")
+
+	for i := 0; i < len(pParts); i++ {
+		pPart := pParts[i]
+		if pPart == "#" {
+			return true
+		}
+		if i >= len(tParts) {
+			return false
+		}
+		if pPart == "*" {
+			continue
+		}
+		if pPart != tParts[i] {
+			return false
+		}
+	}
+	return len(pParts) == len(tParts)
+}
+
+func getExpiryFromContext(ctx context.Context) time.Time {
+	var ttlMs int
+	if ttlVal := ctx.Value("ttl-ms"); ttlVal != nil {
+		if t, ok := ttlVal.(int); ok {
+			ttlMs = t
+		} else if t, ok := ttlVal.(string); ok {
+			if parsed, err := strconv.Atoi(t); err == nil {
+				ttlMs = parsed
+			}
+		} else if t, ok := ttlVal.(int64); ok {
+			ttlMs = int(t)
+		}
+	} else if ttlVal := ctx.Value("ttl"); ttlVal != nil {
+		if t, ok := ttlVal.(int); ok {
+			ttlMs = t
+		} else if t, ok := ttlVal.(string); ok {
+			if parsed, err := strconv.Atoi(t); err == nil {
+				ttlMs = parsed
+			}
+		} else if t, ok := ttlVal.(int64); ok {
+			ttlMs = int(t)
+		}
+	}
+
+	if ttlMs > 0 {
+		return time.Now().Add(time.Duration(ttlMs) * time.Millisecond)
+	}
+	return time.Time{}
+}
+

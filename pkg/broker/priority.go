@@ -3,6 +3,7 @@ package broker
 import (
 	"container/heap"
 	"sync"
+	"time"
 )
 
 // PriorityMessage represents a message stored in the PriorityQueue.
@@ -12,6 +13,7 @@ type PriorityMessage struct {
 	Sequence    uint64
 	PartitionId int
 	Index       int // Index of the item in the heap; maintained by heap.Interface
+	Expiry      time.Time
 }
 
 type messageHeap []*PriorityMessage
@@ -63,8 +65,8 @@ func NewPriorityQueue() *PriorityQueue {
 	return pq
 }
 
-// Push adds a message to the priority queue with the given priority.
-func (pq *PriorityQueue) Push(payload string, priority int, partitionId int) {
+// Push adds a message to the priority queue with the given priority and expiry.
+func (pq *PriorityQueue) Push(payload string, priority int, partitionId int, expiry time.Time) {
 	pq.mu.Lock()
 	defer pq.mu.Unlock()
 
@@ -74,6 +76,7 @@ func (pq *PriorityQueue) Push(payload string, priority int, partitionId int) {
 		Priority:    priority,
 		Sequence:    pq.sequence,
 		PartitionId: partitionId,
+		Expiry:      expiry,
 	}
 	heap.Push(&pq.h, msg)
 	pq.cond.Signal()
