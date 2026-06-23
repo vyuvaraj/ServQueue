@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"servqueue/pkg/broker"
 	"servqueue/pkg/storage"
 
+	"github.com/gorilla/websocket"
 	"github.com/vyuvaraj/ServShared"
 )
 
@@ -54,6 +56,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/v1/replay", s.authorize(s.handleReplay))
 	mux.HandleFunc("/api/offsets", s.authorize(s.handleOffsets))
 	mux.HandleFunc("/api/v1/offsets", s.authorize(s.handleOffsets))
+	mux.HandleFunc("/api/stats/ws", s.authorize(s.handleStatsWS))
+	mux.HandleFunc("/api/v1/stats/ws", s.authorize(s.handleStatsWS))
 
 	s.httpSrv = &http.Server{
 		Addr:    s.addr,
@@ -398,4 +402,54 @@ func base64UrlDecode(s string) ([]byte, error) {
 	s = strings.ReplaceAll(s, "-", "+")
 	s = strings.ReplaceAll(s, "_", "/")
 	return base64.URLEncoding.DecodeString(s)
+}
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
+
+func (s *Server) handleStatsWS(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("Failed to upgrade websocket: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	ticker := time.NewTicker(100 * time.Millisecond) // tick faster in testing/control updates
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			walEntries, _ := s.engine.GetWALEntries()
+			if walEntries == nil {
+				walEntries = []storage.LogEntry{}
+			}
+			delayedMsgs := s.engine.GetDelayedMessages()
+			if delayedMsgs == nil {
+				delayedMsgs = []broker.DelayedMessage{}
+			}
+
+			stats := map[string]interface{}{
+				"status": "healthy",
+				"metrics": map[string]interface{}{
+					"messages_published_total": s.engine.Metrics.MessagesPublished,
+					"wasm_executions_total":    s.engine.Metrics.WasmExecutions,
+					"wasm_execution_errors":    s.engine.Metrics.WasmExecutionErrors,
+					"wasm_duration_ns":         s.engine.Metrics.WasmDurationNs,
+				},
+				"wal_entries":      walEntries,
+				"delayed_messages": delayedMsgs,
+			}
+
+			if err := conn.WriteJSON(stats); err != nil {
+				return
+			}
+		case <-r.Context().Done():
+			return
+		}
+	}
 }

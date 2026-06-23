@@ -14,6 +14,8 @@ import (
 	"servqueue/pkg/broker"
 	"servqueue/pkg/stomp"
 	"servqueue/pkg/web"
+
+	"github.com/gorilla/websocket"
 )
 
 // Simple WASI mock module byte representation for testing WASM execution.
@@ -520,6 +522,80 @@ func TestPublishRateLimiter(t *testing.T) {
 	_, err = engine.Publish(context.Background(), "rate-test", "payload3")
 	if err == nil || err.Error() != "rate limit exceeded" {
 		t.Fatalf("Expected rate limit error, got: %v", err)
+	}
+}
+
+func TestStatsWebSocketStream(t *testing.T) {
+	_ = os.Remove("queue.wal")
+	defer os.Remove("queue.wal")
+
+	engine := broker.NewBrokerEngine()
+	defer engine.Stop()
+
+	token := "ws-test-token"
+	webServer := web.NewServer("127.0.0.1:8086", engine, token, "", "")
+	go webServer.Start()
+	time.Sleep(200 * time.Millisecond)
+
+	// Dial WebSocket connection
+	dialer := websocket.Dialer{}
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+token)
+
+	wsURL := "ws://127.0.0.1:8086/api/v1/stats/ws"
+	conn, _, err := dialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatalf("Failed to dial websocket: %v", err)
+	}
+	defer conn.Close()
+
+	// Read initial stats
+	var initialStats struct {
+		Status  string `json:"status"`
+		Metrics struct {
+			MessagesPublishedTotal int `json:"messages_published_total"`
+		} `json:"metrics"`
+	}
+
+	err = conn.ReadJSON(&initialStats)
+	if err != nil {
+		t.Fatalf("Failed to read JSON: %v", err)
+	}
+
+	if initialStats.Status != "healthy" {
+		t.Errorf("Expected status healthy, got %s", initialStats.Status)
+	}
+
+	// Publish a message
+	_, err = engine.Publish(context.Background(), "ws-topic", "test-payload")
+	if err != nil {
+		t.Fatalf("Publish failed: %v", err)
+	}
+
+	// Wait for the next WebSocket message and verify count increased
+	var updatedStats struct {
+		Status  string `json:"status"`
+		Metrics struct {
+			MessagesPublishedTotal int `json:"messages_published_total"`
+		} `json:"metrics"`
+	}
+
+	// We might need to read multiple times since the ticker fires every 100ms
+	success := false
+	for i := 0; i < 5; i++ {
+		err = conn.ReadJSON(&updatedStats)
+		if err != nil {
+			t.Fatalf("Failed to read updated JSON: %v", err)
+		}
+		if updatedStats.Metrics.MessagesPublishedTotal == 1 {
+			success = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if !success {
+		t.Errorf("Expected messages_published_total to be 1, got %d", updatedStats.Metrics.MessagesPublishedTotal)
 	}
 }
 
