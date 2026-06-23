@@ -55,6 +55,8 @@ type BrokerEngine struct {
 	groupOffsets   map[string]map[string]int64 // groupName -> topic -> offset
 	timeWheel      *TimeWheel
 	publishLimiter *TokenBucket
+	topicQueues    map[string]*PriorityQueue
+	topicCancel    map[string]context.CancelFunc
 }
 
 func NewBrokerEngine() *BrokerEngine {
@@ -81,6 +83,8 @@ func NewBrokerEngine() *BrokerEngine {
 		delayedMsgs:  make(map[string]DelayedMessage),
 		groupOffsets: make(map[string]map[string]int64),
 		timeWheel:    NewTimeWheel(10*time.Millisecond, 36000),
+		topicQueues:  make(map[string]*PriorityQueue),
+		topicCancel:  make(map[string]context.CancelFunc),
 	}
 	engine.timeWheel.Start()
 
@@ -120,6 +124,124 @@ func NewBrokerEngine() *BrokerEngine {
 func (e *BrokerEngine) Stop() {
 	if e.timeWheel != nil {
 		e.timeWheel.Stop()
+	}
+	e.mu.Lock()
+	for _, cancel := range e.topicCancel {
+		cancel()
+	}
+	e.mu.Unlock()
+}
+
+func (e *BrokerEngine) getOrCreateQueue(topic string) *PriorityQueue {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	pq, ok := e.topicQueues[topic]
+	if !ok {
+		pq = NewPriorityQueue()
+		e.topicQueues[topic] = pq
+
+		ctx, cancel := context.WithCancel(context.Background())
+		e.topicCancel[topic] = cancel
+
+		go e.dispatchLoop(ctx, topic, pq)
+	}
+	return pq
+}
+
+func (e *BrokerEngine) dispatchLoop(ctx context.Context, topic string, pq *PriorityQueue) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			e.mu.RLock()
+			hasSubs := len(e.topics[topic]) > 0
+			if !hasSubs {
+				for _, pSubs := range e.partitions[topic] {
+					if len(pSubs) > 0 {
+						hasSubs = true
+						break
+					}
+				}
+			}
+			if !hasSubs {
+				for _, gSubs := range e.groupSubs[topic] {
+					if len(gSubs) > 0 {
+						hasSubs = true
+						break
+					}
+				}
+			}
+			e.mu.RUnlock()
+
+			if !hasSubs {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(10 * time.Millisecond):
+					continue
+				}
+			}
+
+			msg, ok := pq.PopNonBlocking()
+			if !ok {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(10 * time.Millisecond):
+					continue
+				}
+			}
+
+			e.mu.RLock()
+			subs := e.topics[topic]
+			partsMap, exists := e.partitions[topic]
+			var partitionSubs []chan string
+			if exists {
+				partitionSubs = partsMap[msg.PartitionId]
+			}
+			groupsMap := make(map[string][]chan string)
+			if e.groupSubs[topic] != nil {
+				for gName, gSubs := range e.groupSubs[topic] {
+					groupsMap[gName] = gSubs
+				}
+			}
+			e.mu.RUnlock()
+
+			for _, sub := range subs {
+				select {
+				case sub <- msg.Payload:
+				default:
+				}
+			}
+
+			for _, sub := range partitionSubs {
+				select {
+				case sub <- msg.Payload:
+				default:
+				}
+			}
+
+			for gName, gSubs := range groupsMap {
+				if len(gSubs) == 0 {
+					continue
+				}
+				e.mu.Lock()
+				if e.groupIndices[topic] == nil {
+					e.groupIndices[topic] = make(map[string]uint64)
+				}
+				idx := e.groupIndices[topic][gName]
+				e.groupIndices[topic][gName] = idx + 1
+				e.mu.Unlock()
+
+				targetChan := gSubs[idx%uint64(len(gSubs))]
+				select {
+				case targetChan <- msg.Payload:
+				default:
+				}
+			}
+		}
 	}
 }
 
@@ -397,21 +519,17 @@ func (e *BrokerEngine) PublishPartition(ctx context.Context, topic string, key s
 		}
 	}
 
-	// Dispatch to the targeted partition index subs
-	e.mu.RLock()
-	partsMap, exists := e.partitions[topic]
-	var subs []chan string
-	if exists {
-		subs = partsMap[partitionId]
-	}
-	e.mu.RUnlock()
-
-	for _, sub := range subs {
-		select {
-		case sub <- processed:
-		default:
+	priority := 0
+	if prioVal, ok := ctx.Value("priority").(int); ok {
+		priority = prioVal
+	} else if prioStr, ok := ctx.Value("priority").(string); ok {
+		if p, err := strconv.Atoi(prioStr); err == nil {
+			priority = p
 		}
 	}
+
+	pq := e.getOrCreateQueue(topic)
+	pq.Push(processed, priority, partitionId)
 
 	otel.EndSpan(span, nil, map[string]interface{}{})
 	return processed, nil
@@ -506,43 +624,17 @@ func (e *BrokerEngine) Publish(ctx context.Context, topic string, payload string
 		}
 	}
 
-	e.mu.RLock()
-	subs, exists := e.topics[topic]
-	groupsMap := make(map[string][]chan string)
-	if e.groupSubs[topic] != nil {
-		for gName, gSubs := range e.groupSubs[topic] {
-			groupsMap[gName] = gSubs
-		}
-	}
-	e.mu.RUnlock()
-
-	if exists {
-		for _, sub := range subs {
-			select {
-			case sub <- processed:
-			default:
-			}
+	priority := 0
+	if prioVal, ok := ctx.Value("priority").(int); ok {
+		priority = prioVal
+	} else if prioStr, ok := ctx.Value("priority").(string); ok {
+		if p, err := strconv.Atoi(prioStr); err == nil {
+			priority = p
 		}
 	}
 
-	for gName, gSubs := range groupsMap {
-		if len(gSubs) == 0 {
-			continue
-		}
-		e.mu.Lock()
-		if e.groupIndices[topic] == nil {
-			e.groupIndices[topic] = make(map[string]uint64)
-		}
-		idx := e.groupIndices[topic][gName]
-		e.groupIndices[topic][gName] = idx + 1
-		e.mu.Unlock()
-
-		targetChan := gSubs[idx%uint64(len(gSubs))]
-		select {
-		case targetChan <- processed:
-		default:
-		}
-	}
+	pq := e.getOrCreateQueue(topic)
+	pq.Push(processed, priority, 0)
 
 	otel.EndSpan(span, nil, map[string]interface{}{
 		"messaging.system":      "servqueue",

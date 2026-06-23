@@ -70,7 +70,7 @@ This document outlines the planned evolutionary stages of **ServQueue** to evolv
 | 8.6 | **CI/CD pipeline (GitHub Actions)** | Small | Automated build, test, and format checks on every PR. Currently missing. | [x] |
 | 8.7 | **WebSocket push for real-time metrics** | Medium | Push live throughput, subscriber counts, and WASM execution stats to ServConsole via WebSocket. | [x] |
 | 8.8 | **Consumer group support** | Large | Multiple subscribers in a consumer group with partition assignment — enables horizontal scaling of message consumers. | [x] |
-| 8.9 | **Message priority levels** | Medium | Support priority tiers on publish so high-priority messages are delivered ahead of low-priority ones. | [ ] |
+| 8.9 | **Message priority levels** | Medium | Support priority tiers on publish so high-priority messages are delivered ahead of low-priority ones. | [x] |
 
 ---
 

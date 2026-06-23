@@ -599,4 +599,47 @@ func TestStatsWebSocketStream(t *testing.T) {
 	}
 }
 
+func TestMessagePriorityLevels(t *testing.T) {
+	_ = os.Remove("queue.wal")
+	defer os.Remove("queue.wal")
+
+	engine := broker.NewBrokerEngine()
+	defer engine.Stop()
+
+	topic := "priority-test-topic"
+
+	// Publish messages with different priorities BEFORE subscribing
+	// This ensures they are queued in the PriorityQueue, and when we subscribe
+	// they should be delivered in priority order: 9 (highest), then 5, then 1 (lowest).
+	ctx1 := context.WithValue(context.Background(), "priority", 5)
+	_, _ = engine.Publish(ctx1, topic, "prio-5")
+
+	ctx2 := context.WithValue(context.Background(), "priority", 9)
+	_, _ = engine.Publish(ctx2, topic, "prio-9")
+
+	ctx3 := context.WithValue(context.Background(), "priority", 1)
+	_, _ = engine.Publish(ctx3, topic, "prio-1")
+
+	// Also publish a message without priority (should default to 0)
+	_, _ = engine.Publish(context.Background(), topic, "prio-0")
+
+	// Now subscribe to the topic
+	sub := engine.Subscribe(topic)
+	defer engine.Unsubscribe(topic, sub)
+
+	// Wait and verify we receive the messages in priority order: prio-9, prio-5, prio-1, prio-0
+	expectedOrder := []string{"prio-9", "prio-5", "prio-1", "prio-0"}
+	for _, expected := range expectedOrder {
+		select {
+		case msg := <-sub:
+			if msg != expected {
+				t.Errorf("Expected message %q, got %q", expected, msg)
+			}
+		case <-time.After(1 * time.Second):
+			t.Fatalf("Timeout waiting for message %q", expected)
+		}
+	}
+}
+
+
 
