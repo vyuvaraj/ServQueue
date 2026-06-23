@@ -229,6 +229,10 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 
 	res, err := s.engine.Publish(ctx, req.Topic, req.Payload)
 	if err != nil {
+		if err.Error() == "rate limit exceeded" {
+			WriteJSONError(w, r, "Rate limit exceeded", "ERR_RATE_LIMIT_EXCEEDED", http.StatusTooManyRequests)
+			return
+		}
 		WriteJSONError(w, r, "Transform error: "+err.Error(), "ERR_WASM_TRANSFORM_FAILED", http.StatusInternalServerError)
 		return
 	}

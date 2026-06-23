@@ -65,5 +65,9 @@ func main() {
 	log.Println("ServQueue: Stopping STOMP server...")
 	stompServer.Stop()
 
+	// 3. Stop Broker Engine (stops TimeWheel)
+	log.Println("ServQueue: Stopping Broker Engine...")
+	engine.Stop()
+
 	log.Println("ServQueue: Shutdown complete")
 }

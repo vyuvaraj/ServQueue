@@ -468,3 +468,59 @@ func TestReplayAndOffsets(t *testing.T) {
 	}
 }
 
+func TestTimeWheelScheduler(t *testing.T) {
+	tw := broker.NewTimeWheel(10 * time.Millisecond, 10)
+	tw.Start()
+	defer tw.Stop()
+
+	fired := make(chan bool, 1)
+	start := time.Now()
+	tw.AddJob(50*time.Millisecond, func() {
+		fired <- true
+	})
+
+	select {
+	case <-fired:
+		elapsed := time.Since(start)
+		if elapsed < 40*time.Millisecond {
+			t.Errorf("Job fired too early: %v", elapsed)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("TimeWheel job did not fire")
+	}
+}
+
+func TestPublishRateLimiter(t *testing.T) {
+	_ = os.Remove("queue.wal")
+	defer os.Remove("queue.wal")
+
+	// Set env vars for rate limit test
+	os.Setenv("SERVQUEUE_PUBLISH_RATE", "10")
+	os.Setenv("SERVQUEUE_PUBLISH_CAPACITY", "2")
+	defer func() {
+		os.Unsetenv("SERVQUEUE_PUBLISH_RATE")
+		os.Unsetenv("SERVQUEUE_PUBLISH_CAPACITY")
+	}()
+
+	engine := broker.NewBrokerEngine()
+	defer engine.Stop()
+
+	// Capacity is 2, so the first 2 publishes should pass
+	_, err := engine.Publish(context.Background(), "rate-test", "payload1")
+	if err != nil {
+		t.Fatalf("First publish failed: %v", err)
+	}
+
+	_, err = engine.Publish(context.Background(), "rate-test", "payload2")
+	if err != nil {
+		t.Fatalf("Second publish failed: %v", err)
+	}
+
+	// Third publish should exceed capacity immediately
+	_, err = engine.Publish(context.Background(), "rate-test", "payload3")
+	if err == nil || err.Error() != "rate limit exceeded" {
+		t.Fatalf("Expected rate limit error, got: %v", err)
+	}
+}
+
+

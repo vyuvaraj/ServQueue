@@ -66,7 +66,7 @@ This document outlines the planned evolutionary stages of **ServQueue** to evolv
 | 8.2 | **Graceful shutdown on SIGTERM** | Small | Drain in-flight STOMP messages, flush WAL, and close connections cleanly before exit. Required for rolling updates. | [x] |
 | 8.3 | **Standardized error response contract** | Small | All HTTP API errors return `{"error": "msg", "code": "ERR_CODE", "trace_id": "..."}` — consistent across ecosystem. | [x] |
 | 8.4 | **API versioning (`/api/v1/`)** | Small | Version the management API before breaking changes accumulate. | [x] |
-| 8.5 | **Rate limiting on publish endpoint** | Small | Protect `POST /api/publish` against flooding — currently unthrottled. | [ ] |
+| 8.5 | **Rate limiting on publish endpoint** | Small | Protect `POST /api/publish` against flooding — currently unthrottled. | [x] |
 | 8.6 | **CI/CD pipeline (GitHub Actions)** | Small | Automated build, test, and format checks on every PR. Currently missing. | [x] |
 | 8.7 | **WebSocket push for real-time metrics** | Medium | Push live throughput, subscriber counts, and WASM execution stats to ServConsole via WebSocket. | [ ] |
 | 8.8 | **Consumer group support** | Large | Multiple subscribers in a consumer group with partition assignment — enables horizontal scaling of message consumers. | [x] |

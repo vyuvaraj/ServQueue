@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -52,6 +53,8 @@ type BrokerEngine struct {
 	delayedMsgs    map[string]DelayedMessage
 	delayedCounter uint64
 	groupOffsets   map[string]map[string]int64 // groupName -> topic -> offset
+	timeWheel      *TimeWheel
+	publishLimiter *TokenBucket
 }
 
 func NewBrokerEngine() *BrokerEngine {
@@ -77,7 +80,23 @@ func NewBrokerEngine() *BrokerEngine {
 		dedup:        NewDeduplicator(5 * time.Minute),
 		delayedMsgs:  make(map[string]DelayedMessage),
 		groupOffsets: make(map[string]map[string]int64),
+		timeWheel:    NewTimeWheel(10*time.Millisecond, 36000),
 	}
+	engine.timeWheel.Start()
+
+	rate := 100.0
+	capacity := 100.0
+	if rateStr := os.Getenv("SERVQUEUE_PUBLISH_RATE"); rateStr != "" {
+		if r, err := strconv.ParseFloat(rateStr, 64); err == nil && r > 0 {
+			rate = r
+		}
+	}
+	if capStr := os.Getenv("SERVQUEUE_PUBLISH_CAPACITY"); capStr != "" {
+		if c, err := strconv.ParseFloat(capStr, 64); err == nil && c > 0 {
+			capacity = c
+		}
+	}
+	engine.publishLimiter = NewTokenBucket(rate, capacity)
 
 	if wal != nil {
 		// Set rotation trigger to upload closed segment to cold storage
@@ -95,6 +114,13 @@ func NewBrokerEngine() *BrokerEngine {
 	}
 
 	return engine
+}
+
+// Stop stops the background workers (like the TimeWheel ticker).
+func (e *BrokerEngine) Stop() {
+	if e.timeWheel != nil {
+		e.timeWheel.Stop()
+	}
 }
 
 func (e *BrokerEngine) ConfigureOffloader(endpoint, bucket, token string) {
@@ -393,6 +419,10 @@ func (e *BrokerEngine) PublishPartition(ctx context.Context, topic string, key s
 
 // Publish writes a message to a topic, running any registered WASM transform first
 func (e *BrokerEngine) Publish(ctx context.Context, topic string, payload string) (string, error) {
+	if e.publishLimiter != nil && !e.publishLimiter.Allow() {
+		return "", fmt.Errorf("rate limit exceeded")
+	}
+
 	if msgID, ok := ctx.Value("message-id").(string); ok && msgID != "" {
 		if !e.dedup.Add(msgID) {
 			log.Printf("Broker: duplicate message detected for message-id: %s. Dropping.", msgID)
@@ -423,7 +453,7 @@ func (e *BrokerEngine) Publish(ctx context.Context, topic string, payload string
 			}
 			e.delayedMu.Unlock()
 
-			time.AfterFunc(time.Duration(delayMs)*time.Millisecond, func() {
+			e.timeWheel.AddJob(time.Duration(delayMs)*time.Millisecond, func() {
 				e.delayedMu.Lock()
 				delete(e.delayedMsgs, msgID)
 				e.delayedMu.Unlock()
