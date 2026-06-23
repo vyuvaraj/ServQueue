@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -638,6 +639,177 @@ func TestMessagePriorityLevels(t *testing.T) {
 		case <-time.After(1 * time.Second):
 			t.Fatalf("Timeout waiting for message %q", expected)
 		}
+	}
+}
+
+func TestIdempotentProducer(t *testing.T) {
+	_ = os.Remove("queue.wal")
+	defer os.Remove("queue.wal")
+
+	engine := broker.NewBrokerEngine()
+	defer engine.Stop()
+
+	topic := "idempotent-test"
+	sub := engine.Subscribe(topic)
+	defer engine.Unsubscribe(topic, sub)
+
+	ctx1 := context.WithValue(context.Background(), "producer-id", "prod-1")
+	ctx1 = context.WithValue(ctx1, "sequence-number", int64(1))
+	_, err := engine.Publish(ctx1, topic, "msg-1")
+	if err != nil {
+		t.Fatalf("First publish failed: %v", err)
+	}
+
+	// Try publishing a duplicate sequence number
+	ctx2 := context.WithValue(context.Background(), "producer-id", "prod-1")
+	ctx2 = context.WithValue(ctx2, "sequence-number", int64(1))
+	_, err = engine.Publish(ctx2, topic, "msg-1-dup")
+	if err != nil {
+		t.Fatalf("Duplicate publish returned error: %v", err)
+	}
+
+	// Publish next sequence number
+	ctx3 := context.WithValue(context.Background(), "producer-id", "prod-1")
+	ctx3 = context.WithValue(ctx3, "sequence-number", int64(2))
+	_, err = engine.Publish(ctx3, topic, "msg-2")
+	if err != nil {
+		t.Fatalf("Next publish failed: %v", err)
+	}
+
+	// Verify subscription received msg-1 and msg-2, but NOT msg-1-dup
+	select {
+	case m := <-sub:
+		if m != "msg-1" {
+			t.Errorf("Expected msg-1, got %s", m)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for msg-1")
+	}
+
+	select {
+	case m := <-sub:
+		if m != "msg-2" {
+			t.Errorf("Expected msg-2, got %s", m)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for msg-2")
+	}
+
+	// Ensure no extra message was delivered
+	select {
+	case m := <-sub:
+		t.Errorf("Unexpected extra message received: %s", m)
+	case <-time.After(100 * time.Millisecond):
+		// Success
+	}
+}
+
+func TestSTOMPTransactions(t *testing.T) {
+	_ = os.Remove("queue.wal")
+	defer os.Remove("queue.wal")
+
+	engine := broker.NewBrokerEngine()
+	defer engine.Stop()
+
+	stompServer := stomp.NewServer("127.0.0.1:61625", engine, "", "", "", "")
+	go stompServer.Start()
+	defer stompServer.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	sub := engine.Subscribe("tx-topic")
+	defer engine.Unsubscribe("tx-topic", sub)
+
+	conn, err := net.Dial("tcp", "127.0.0.1:61625")
+	if err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer conn.Close()
+
+	// 1. Send CONNECT
+	_, _ = conn.Write([]byte("CONNECT\naccept-version:1.2\n\n\x00"))
+	buf := make([]byte, 1024)
+	n, _ := conn.Read(buf)
+	if !strings.Contains(string(buf[:n]), "CONNECTED") {
+		t.Fatalf("Failed to connect to STOMP server: %s", string(buf[:n]))
+	}
+
+	// 2. BEGIN Transaction tx-1
+	_, _ = conn.Write([]byte("BEGIN\ntransaction:tx-1\n\n\x00"))
+
+	// 3. SEND message under tx-1
+	_, _ = conn.Write([]byte("SEND\ndestination:tx-topic\ntransaction:tx-1\n\nval-1\x00"))
+
+	// Ensure message is NOT delivered yet (it's buffered)
+	select {
+	case m := <-sub:
+		t.Fatalf("Message delivered before commit: %s", m)
+	case <-time.After(200 * time.Millisecond):
+		// Success, not delivered yet
+	}
+
+	// 4. COMMIT Transaction tx-1
+	_, _ = conn.Write([]byte("COMMIT\ntransaction:tx-1\n\n\x00"))
+
+	// Ensure message IS delivered now
+	select {
+	case m := <-sub:
+		if m != "val-1" {
+			t.Errorf("Expected val-1, got %s", m)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for committed message")
+	}
+}
+
+func TestSchemaValidation(t *testing.T) {
+	_ = os.Remove("queue.wal")
+	defer os.Remove("queue.wal")
+
+	engine := broker.NewBrokerEngine()
+	defer engine.Stop()
+
+	webServer := web.NewServer("127.0.0.1:8087", engine, "", "", "")
+	go webServer.Start()
+	time.Sleep(200 * time.Millisecond)
+
+	topic := "schema-test-topic"
+	schema := map[string]string{
+		"name":  "required,string",
+		"email": "required,string",
+		"age":   "int",
+	}
+
+	// Register schema via HTTP API
+	schemaBytes, _ := json.Marshal(schema)
+	resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:8087/api/v1/topics/%s/schema", topic), "application/json", bytes.NewReader(schemaBytes))
+	if err != nil {
+		t.Fatalf("Failed to register schema: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected status 200 for schema registration, got %d", resp.StatusCode)
+	}
+
+	// 1. Try publishing a valid payload
+	validPayload := `{"name":"Alice","email":"alice@example.com","age":25}`
+	_, err = engine.Publish(context.Background(), topic, validPayload)
+	if err != nil {
+		t.Errorf("Expected valid payload to succeed, got error: %v", err)
+	}
+
+	// 2. Try publishing a payload missing a required field (email)
+	invalidPayload := `{"name":"Bob","age":30}`
+	_, err = engine.Publish(context.Background(), topic, invalidPayload)
+	if err == nil || !strings.Contains(err.Error(), "field 'email' is required") {
+		t.Errorf("Expected error for missing field, got: %v", err)
+	}
+
+	// 3. Try publishing a payload with incorrect type (age as string instead of int)
+	invalidTypePayload := `{"name":"Bob","email":"bob@example.com","age":"30"}`
+	_, err = engine.Publish(context.Background(), topic, invalidTypePayload)
+	if err == nil || !strings.Contains(err.Error(), "must be an integer") {
+		t.Errorf("Expected error for invalid type, got: %v", err)
 	}
 }
 

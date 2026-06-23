@@ -146,6 +146,12 @@ func (s *Server) handleConnection(conn net.Conn) {
 		ch    chan string
 	}
 	activeSubs := make(map[string]subInfo)
+	type txPublish struct {
+		topic   string
+		payload string
+		ctx     context.Context
+	}
+	txBuffers := make(map[string][]txPublish)
 	defer func() {
 		for _, sub := range activeSubs {
 			s.engine.Unsubscribe(sub.topic, sub.ch)
@@ -207,7 +213,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 
-			// Capture traceparent header for context propagation
 			ctx := context.Background()
 			if tp, exists := frame.Headers["traceparent"]; exists {
 				ctx = context.WithValue(ctx, "traceparent", tp)
@@ -220,8 +225,52 @@ func (s *Server) handleConnection(conn net.Conn) {
 			if delayVal, exists := frame.Headers["delay-ms"]; exists {
 				ctx = context.WithValue(ctx, "delay-ms", delayVal)
 			}
+			if prodID, exists := frame.Headers["producer-id"]; exists {
+				ctx = context.WithValue(ctx, "producer-id", prodID)
+			}
+			if seqStr, exists := frame.Headers["sequence-number"]; exists {
+				ctx = context.WithValue(ctx, "sequence-number", seqStr)
+			}
+
+			txID := frame.Headers["transaction"]
+			if txID != "" {
+				if buf, exists := txBuffers[txID]; exists {
+					txBuffers[txID] = append(buf, txPublish{
+						topic:   destination,
+						payload: frame.Body,
+						ctx:     ctx,
+					})
+				} else {
+					_ = writeFrame(writer, "ERROR", map[string]string{"message": "Transaction not found"}, "Transaction "+txID+" was not started")
+					writer.Flush()
+				}
+				continue
+			}
 
 			_, _ = s.engine.Publish(ctx, destination, frame.Body)
+
+		case "BEGIN":
+			txID := frame.Headers["transaction"]
+			if txID != "" {
+				txBuffers[txID] = []txPublish{}
+			}
+
+		case "COMMIT":
+			txID := frame.Headers["transaction"]
+			if txID != "" {
+				if buf, exists := txBuffers[txID]; exists {
+					for _, msg := range buf {
+						_, _ = s.engine.Publish(msg.ctx, msg.topic, msg.payload)
+					}
+					delete(txBuffers, txID)
+				}
+			}
+
+		case "ABORT":
+			txID := frame.Headers["transaction"]
+			if txID != "" {
+				delete(txBuffers, txID)
+			}
 
 		case "SUBSCRIBE":
 			destination := frame.Headers["destination"]

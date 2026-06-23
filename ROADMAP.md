@@ -80,12 +80,12 @@ These items take ServQueue from a lightweight broker to a **category-defining ev
 
 | # | Item | Effort | Description | Status |
 |---|------|--------|-------------|--------|
-| 9.1 | **Exactly-once delivery semantics** | Large | Idempotent producer IDs + transactional message batches. Guarantees no duplicates and no loss even across broker restarts. The gold standard for financial/ordering systems. | [ ] |
+| 9.1 | **Exactly-once delivery semantics** | Large | Idempotent producer IDs + transactional message batches. Guarantees no duplicates and no loss even across broker restarts. The gold standard for financial/ordering systems. | [x] |
 | 9.2 | **Schema registry & validation** | Medium | Attach Avro/JSON Schema to topics. Reject non-conforming publishes at the broker. Auto-evolve schemas with compatibility checks. | [ ] |
 | 9.3 | **Topic compaction** | Medium | Retain only the latest message per key within a topic — useful for changelog/state topics. Similar to Kafka log compaction. | [ ] |
 | 9.4 | **Multi-tenant topic isolation** | Medium | Namespace-scoped topics with independent quotas, rate limits, and RBAC policies per tenant. Enables shared cluster deployment. | [ ] |
 | 9.5 | **Stream processing DSL** | Large | Built-in windowed aggregations, joins, and filters expressed in `.srv` syntax: `stream "orders" |> filter(o => o.total > 100) |> window(5m) |> count() |> publish("high-value-orders")`. | [ ] |
-| 9.6 | **Message replay with offset management** | Medium | Named consumer offsets with commit/seek semantics. Replay from any point in the WAL by offset or timestamp without re-creating subscriptions. | [ ] |
+| 9.6 | **Message replay with offset management** | Medium | Named consumer offsets with commit/seek semantics. Replay from any point in the WAL by offset or timestamp without re-creating subscriptions. | [x] |
 | 9.7 | **Fan-out patterns (broadcast + routing keys)** | Medium | Support topic routing patterns: `orders.*` (wildcard), `orders.us.#` (multi-level). Enables flexible pub/sub topologies without multiple topics. | [ ] |
 | 9.8 | **Backpressure & flow control** | Medium | When consumers are slow, apply configurable backpressure: pause publishes, buffer to disk, or reject with `429`. Prevents unbounded memory growth. | [ ] |
 | 9.9 | **Cross-cluster mirroring** | Large | Replicate topics between geographically separate ServQueue clusters for disaster recovery and multi-region active-active setups. | [ ] |

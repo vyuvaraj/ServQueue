@@ -145,9 +145,28 @@ func (s *Server) handleTopics(w http.ResponseWriter, r *http.Request) {
 		s.handleRegisterTransform(w, r, topic)
 	case "dlq":
 		s.handleRegisterDLQ(w, r, topic)
+	case "schema":
+		s.handleRegisterSchema(w, r, topic)
 	default:
 		WriteJSONError(w, r, "Not found", "ERR_NOT_FOUND", http.StatusNotFound)
 	}
+}
+
+func (s *Server) handleRegisterSchema(w http.ResponseWriter, r *http.Request, topic string) {
+	if r.Method != http.MethodPost {
+		WriteJSONError(w, r, "Method not allowed", "ERR_METHOD_NOT_ALLOWED", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var schema map[string]string
+	if err := json.NewDecoder(r.Body).Decode(&schema); err != nil {
+		WriteJSONError(w, r, "Bad request: invalid schema JSON payload", "ERR_BAD_REQUEST_BODY", http.StatusBadRequest)
+		return
+	}
+
+	s.engine.RegisterSchema(topic, schema)
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Schema registered for topic " + topic))
 }
 
 func (s *Server) handleRegisterTransform(w http.ResponseWriter, r *http.Request, topic string) {
@@ -277,12 +296,13 @@ func (s *Server) handleReplay(w http.ResponseWriter, r *http.Request) {
 		Group  string `json:"group,omitempty"`
 	}
 
-	if r.Method == http.MethodPost {
+	switch r.Method {
+	case http.MethodPost:
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			WriteJSONError(w, r, "Bad request: invalid JSON body", "ERR_BAD_REQUEST_BODY", http.StatusBadRequest)
 			return
 		}
-	} else if r.Method == http.MethodGet {
+	case http.MethodGet:
 		req.Topic = r.URL.Query().Get("topic")
 		req.Group = r.URL.Query().Get("group")
 		if offStr := r.URL.Query().Get("offset"); offStr != "" {
@@ -290,7 +310,7 @@ func (s *Server) handleReplay(w http.ResponseWriter, r *http.Request) {
 				req.Offset = parsed
 			}
 		}
-	} else {
+	default:
 		WriteJSONError(w, r, "Method not allowed", "ERR_METHOD_NOT_ALLOWED", http.StatusMethodNotAllowed)
 		return
 	}
@@ -315,7 +335,8 @@ func (s *Server) handleReplay(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleOffsets(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
 		group := r.URL.Query().Get("group")
 		topic := r.URL.Query().Get("topic")
 		if group == "" || topic == "" {
@@ -329,7 +350,7 @@ func (s *Server) handleOffsets(w http.ResponseWriter, r *http.Request) {
 			"topic":  topic,
 			"offset": offset,
 		})
-	} else if r.Method == http.MethodPost {
+	case http.MethodPost:
 		var req struct {
 			Group  string `json:"group"`
 			Topic  string `json:"topic"`
@@ -349,7 +370,7 @@ func (s *Server) handleOffsets(w http.ResponseWriter, r *http.Request) {
 			"status":  "success",
 			"message": "Offset committed successfully",
 		})
-	} else {
+	default:
 		WriteJSONError(w, r, "Method not allowed", "ERR_METHOD_NOT_ALLOWED", http.StatusMethodNotAllowed)
 	}
 }

@@ -52,11 +52,15 @@ type BrokerEngine struct {
 	delayedMu      sync.Mutex
 	delayedMsgs    map[string]DelayedMessage
 	delayedCounter uint64
-	groupOffsets   map[string]map[string]int64 // groupName -> topic -> offset
-	timeWheel      *TimeWheel
-	publishLimiter *TokenBucket
-	topicQueues    map[string]*PriorityQueue
-	topicCancel    map[string]context.CancelFunc
+	groupOffsets      map[string]map[string]int64 // groupName -> topic -> offset
+	timeWheel         *TimeWheel
+	publishLimiter    *TokenBucket
+	topicQueues       map[string]*PriorityQueue
+	topicCancel       map[string]context.CancelFunc
+	producerMu        sync.Mutex
+	producerSequences map[string]int64
+	schemasMu         sync.RWMutex
+	schemas           map[string]map[string]string
 }
 
 func NewBrokerEngine() *BrokerEngine {
@@ -81,10 +85,12 @@ func NewBrokerEngine() *BrokerEngine {
 		wal:          wal,
 		dedup:        NewDeduplicator(5 * time.Minute),
 		delayedMsgs:  make(map[string]DelayedMessage),
-		groupOffsets: make(map[string]map[string]int64),
-		timeWheel:    NewTimeWheel(10*time.Millisecond, 36000),
-		topicQueues:  make(map[string]*PriorityQueue),
-		topicCancel:  make(map[string]context.CancelFunc),
+		groupOffsets:      make(map[string]map[string]int64),
+		timeWheel:         NewTimeWheel(10*time.Millisecond, 36000),
+		topicQueues:       make(map[string]*PriorityQueue),
+		topicCancel:       make(map[string]context.CancelFunc),
+		producerSequences: make(map[string]int64),
+		schemas:           make(map[string]map[string]string),
 	}
 	engine.timeWheel.Start()
 
@@ -307,6 +313,22 @@ func (e *BrokerEngine) SetRaftNode(node interface{}) {
 	e.raftNode = node
 }
 
+func (e *BrokerEngine) RegisterSchema(topic string, schema map[string]string) {
+	e.schemasMu.Lock()
+	defer e.schemasMu.Unlock()
+	if e.schemas == nil {
+		e.schemas = make(map[string]map[string]string)
+	}
+	e.schemas[topic] = schema
+}
+
+func (e *BrokerEngine) GetSchema(topic string) (map[string]string, bool) {
+	e.schemasMu.RLock()
+	defer e.schemasMu.RUnlock()
+	schema, ok := e.schemas[topic]
+	return schema, ok
+}
+
 // SetDLQ registers a dead letter queue topic for a source topic.
 // When a WASM transform fails for the source topic, the original
 // payload is routed to the DLQ topic instead of being silently dropped.
@@ -470,6 +492,12 @@ func (e *BrokerEngine) RegisterTransform(ctx context.Context, topic string, wasm
 
 // PublishPartition hashes the key to dispatch messages to a specific partitioned queue
 func (e *BrokerEngine) PublishPartition(ctx context.Context, topic string, key string, payload string) (string, error) {
+	if schema, ok := e.GetSchema(topic); ok {
+		if err := ValidatePayload(payload, schema); err != nil {
+			return payload, fmt.Errorf("schema validation failed: %w", err)
+		}
+	}
+
 	// Hash the key using FNV-1a
 	hasher := fnv.New32a()
 	hasher.Write([]byte(key))
@@ -539,6 +567,37 @@ func (e *BrokerEngine) PublishPartition(ctx context.Context, topic string, key s
 func (e *BrokerEngine) Publish(ctx context.Context, topic string, payload string) (string, error) {
 	if e.publishLimiter != nil && !e.publishLimiter.Allow() {
 		return "", fmt.Errorf("rate limit exceeded")
+	}
+
+	if schema, ok := e.GetSchema(topic); ok {
+		if err := ValidatePayload(payload, schema); err != nil {
+			return payload, fmt.Errorf("schema validation failed: %w", err)
+		}
+	}
+
+	if prodID, ok := ctx.Value("producer-id").(string); ok && prodID != "" {
+		if seqVal := ctx.Value("sequence-number"); seqVal != nil {
+			var seqNum int64
+			var err error
+			if sInt, ok := seqVal.(int64); ok {
+				seqNum = sInt
+			} else if sInt, ok := seqVal.(int); ok {
+				seqNum = int64(sInt)
+			} else if sStr, ok := seqVal.(string); ok {
+				seqNum, err = strconv.ParseInt(sStr, 10, 64)
+			}
+			if err == nil {
+				e.producerMu.Lock()
+				lastSeq, exists := e.producerSequences[prodID]
+				if exists && seqNum <= lastSeq {
+					e.producerMu.Unlock()
+					log.Printf("Broker: duplicate message detected for producer-id %s seq %d (last %d). Dropping but returning success.", prodID, seqNum, lastSeq)
+					return payload, nil
+				}
+				e.producerSequences[prodID] = seqNum
+				e.producerMu.Unlock()
+			}
+		}
 	}
 
 	if msgID, ok := ctx.Value("message-id").(string); ok && msgID != "" {
