@@ -127,6 +127,12 @@ func NewBrokerEngine() *BrokerEngine {
 		}
 	}
 
+	if s3Endpoint := os.Getenv("SERVQUEUE_S3_ENDPOINT"); s3Endpoint != "" {
+		s3Bucket := os.Getenv("SERVQUEUE_S3_BUCKET")
+		s3Token := os.Getenv("SERVQUEUE_S3_TOKEN")
+		engine.ConfigureOffloader(s3Endpoint, s3Bucket, s3Token)
+	}
+
 	return engine
 }
 
@@ -297,6 +303,12 @@ func (e *BrokerEngine) ConfigureOffloader(endpoint, bucket, token string) {
 	e.offloader = storage.NewOffloader(endpoint, bucket, token)
 }
 
+func (e *BrokerEngine) GetOffloader() *storage.Offloader {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.offloader
+}
+
 // TopicInfo describes the state of a single topic for admin inspection.
 type TopicInfo struct {
 	Name         string `json:"name"`
@@ -371,13 +383,24 @@ func (e *BrokerEngine) SetRaftNode(node interface{}) {
 	e.raftNode = node
 }
 
-func (e *BrokerEngine) RegisterSchema(topic string, schema map[string]string) {
+func (e *BrokerEngine) RegisterSchema(ctx context.Context, topic string, schema map[string]string) {
 	e.schemasMu.Lock()
-	defer e.schemasMu.Unlock()
 	if e.schemas == nil {
 		e.schemas = make(map[string]map[string]string)
 	}
 	e.schemas[topic] = schema
+	e.schemasMu.Unlock()
+
+	if ctx.Value("replicated") == nil {
+		e.mu.Lock()
+		rn := e.raftNode
+		e.mu.Unlock()
+		if rn != nil {
+			if raftNode, ok := rn.(*RaftNode); ok {
+				raftNode.Replicate("REGISTER_SCHEMA", topic, nil, "", schema)
+			}
+		}
+	}
 }
 
 func (e *BrokerEngine) GetSchema(topic string) (map[string]string, bool) {
@@ -405,10 +428,17 @@ func (e *BrokerEngine) IsCompacted(topic string) bool {
 // SetDLQ registers a dead letter queue topic for a source topic.
 // When a WASM transform fails for the source topic, the original
 // payload is routed to the DLQ topic instead of being silently dropped.
-func (e *BrokerEngine) SetDLQ(topic string, dlqTopic string) {
+func (e *BrokerEngine) SetDLQ(ctx context.Context, topic string, dlqTopic string) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	e.dlqTopics[topic] = dlqTopic
+	rn := e.raftNode
+	e.mu.Unlock()
+
+	if ctx.Value("replicated") == nil && rn != nil {
+		if raftNode, ok := rn.(*RaftNode); ok {
+			raftNode.Replicate("SET_DLQ", topic, nil, dlqTopic, nil)
+		}
+	}
 }
 
 // GetDLQ returns the DLQ topic registered for a given source topic, if any.
@@ -537,21 +567,28 @@ func (e *BrokerEngine) Unsubscribe(topic string, ch chan string) {
 // RegisterTransform compiles and sets the WASM transform module for a topic
 func (e *BrokerEngine) RegisterTransform(ctx context.Context, topic string, wasmBytes []byte) error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-
 	if len(wasmBytes) == 0 {
 		if compiled, exists := e.transforms[topic]; exists {
 			_ = compiled.Close(ctx)
 			delete(e.transforms, topic)
 		}
+		rn := e.raftNode
+		e.mu.Unlock()
+		if ctx.Value("replicated") == nil && rn != nil {
+			if raftNode, ok := rn.(*RaftNode); ok {
+				raftNode.Replicate("REGISTER_TRANSFORM", topic, nil, "", nil)
+			}
+		}
 		return nil
 	}
+	e.mu.Unlock()
 
 	compiled, err := e.wasmManager.Compile(ctx, wasmBytes)
 	if err != nil {
 		return fmt.Errorf("failed to compile WASM module: %w", err)
 	}
 
+	e.mu.Lock()
 	if old, exists := e.transforms[topic]; exists {
 		go func(c wazero.CompiledModule) {
 			time.Sleep(5 * time.Second)
@@ -560,6 +597,14 @@ func (e *BrokerEngine) RegisterTransform(ctx context.Context, topic string, wasm
 	}
 
 	e.transforms[topic] = compiled
+	rn := e.raftNode
+	e.mu.Unlock()
+
+	if ctx.Value("replicated") == nil && rn != nil {
+		if raftNode, ok := rn.(*RaftNode); ok {
+			raftNode.Replicate("REGISTER_TRANSFORM", topic, wasmBytes, "", nil)
+		}
+	}
 	return nil
 }
 

@@ -9,9 +9,11 @@ import (
 )
 
 type ClusterCommand struct {
-	Op        string `json:"op"`
-	Topic     string `json:"topic"`
-	WasmBytes []byte `json:"wasm_bytes,omitempty"`
+	Op        string            `json:"op"`
+	Topic     string            `json:"topic"`
+	WasmBytes []byte            `json:"wasm_bytes,omitempty"`
+	DLQTopic  string            `json:"dlq_topic,omitempty"`
+	Schema    map[string]string `json:"schema,omitempty"`
 }
 
 type RaftNode struct {
@@ -47,6 +49,12 @@ func (n *RaftNode) Start() error {
 	return nil
 }
 
+func (n *RaftNode) SetLeader(isLeader bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.isLeader = isLeader
+}
+
 func (n *RaftNode) acceptConnections() {
 	for {
 		conn, err := n.listener.Accept()
@@ -64,17 +72,19 @@ func (n *RaftNode) handleConnection(conn net.Conn) {
 		return
 	}
 
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
 	// Replicate command to state machine
+	ctx := context.WithValue(context.Background(), "replicated", true)
 	switch cmd.Op {
 	case "REGISTER_TRANSFORM":
-		_ = n.engine.RegisterTransform(context.Background(), cmd.Topic, cmd.WasmBytes)
+		_ = n.engine.RegisterTransform(ctx, cmd.Topic, cmd.WasmBytes)
+	case "SET_DLQ":
+		n.engine.SetDLQ(ctx, cmd.Topic, cmd.DLQTopic)
+	case "REGISTER_SCHEMA":
+		n.engine.RegisterSchema(ctx, cmd.Topic, cmd.Schema)
 	}
 }
 
-func (n *RaftNode) Replicate(op, topic string, wasmBytes []byte) {
+func (n *RaftNode) Replicate(op, topic string, wasmBytes []byte, dlqTopic string, schema map[string]string) {
 	n.mu.Lock()
 	isL := n.isLeader
 	n.mu.Unlock()
@@ -83,7 +93,13 @@ func (n *RaftNode) Replicate(op, topic string, wasmBytes []byte) {
 		return // Only leader replicates
 	}
 
-	cmd := ClusterCommand{Op: op, Topic: topic, WasmBytes: wasmBytes}
+	cmd := ClusterCommand{
+		Op:        op,
+		Topic:     topic,
+		WasmBytes: wasmBytes,
+		DLQTopic:  dlqTopic,
+		Schema:    schema,
+	}
 	payload, _ := json.Marshal(cmd)
 
 	for _, peer := range n.peers {

@@ -830,7 +830,7 @@ func TestMessageTTL(t *testing.T) {
 	dlqTopic := "ttl-dlq-topic"
 
 	// Register DLQ
-	engine.SetDLQ(topic, dlqTopic)
+	engine.SetDLQ(context.Background(), topic, dlqTopic)
 
 	// Subscribe to DLQ to see if it gets the expired message
 	dlqSub := engine.Subscribe(dlqTopic)
@@ -993,12 +993,13 @@ func TestTopicCompaction(t *testing.T) {
 	// Once we subscribe, the dispatch loop begins delivering the remaining queued messages.
 	var received []string
 	timeout := time.After(500 * time.Millisecond)
+loop:
 	for len(received) < 2 {
 		select {
 		case msg := <-pq:
 			received = append(received, msg)
 		case <-timeout:
-			break
+			break loop
 		}
 	}
 

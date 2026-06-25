@@ -39,18 +39,16 @@ func (o *Offloader) OffloadSegment(closedPath string) (err error) {
 	if err != nil {
 		return fmt.Errorf("offloader: failed to open segment: %w", err)
 	}
-	defer file.Close()
-
-	// Upload to S3/ServStore: PUT /{bucket}/wal/{segment_name}
-	parts := strings.Split(closedPath, "/")
-	filename := parts[len(parts)-1]
-
-	url := fmt.Sprintf("%s/%s/wal/%s", o.s3Endpoint, o.s3Bucket, filename)
 	
 	data, err := io.ReadAll(file)
+	file.Close()
 	if err != nil {
 		return err
 	}
+
+	parts := strings.Split(closedPath, "/")
+	filename := parts[len(parts)-1]
+	url := fmt.Sprintf("%s/%s/wal/%s", o.s3Endpoint, o.s3Bucket, filename)
 
 	req, err := http.NewRequest("PUT", url, bytes.NewReader(data))
 	if err != nil {

@@ -59,6 +59,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/v1/offsets", s.authorize(s.handleOffsets))
 	mux.HandleFunc("/api/stats/ws", s.authorize(s.handleStatsWS))
 	mux.HandleFunc("/api/v1/stats/ws", s.authorize(s.handleStatsWS))
+	mux.HandleFunc("/api/admin/offloader", s.authorize(s.handleConfigureOffloader))
+	mux.HandleFunc("/api/v1/admin/offloader", s.authorize(s.handleConfigureOffloader))
 
 	s.httpSrv = &http.Server{
 		Addr:    s.addr,
@@ -239,7 +241,7 @@ func (s *Server) handleRegisterSchema(w http.ResponseWriter, r *http.Request, to
 		return
 	}
 
-	s.engine.RegisterSchema(topic, schema)
+	s.engine.RegisterSchema(r.Context(), topic, schema)
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Schema registered for topic " + topic))
 }
@@ -299,7 +301,7 @@ func (s *Server) handleRegisterDLQ(w http.ResponseWriter, r *http.Request, topic
 		return
 	}
 
-	s.engine.SetDLQ(topic, namespacedDLQ)
+	s.engine.SetDLQ(r.Context(), topic, namespacedDLQ)
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("DLQ " + namespacedDLQ + " registered for topic " + topic))
 }
@@ -606,4 +608,31 @@ func (s *Server) handleStatsWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+func (s *Server) handleConfigureOffloader(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		WriteJSONError(w, r, "Method not allowed", "ERR_METHOD_NOT_ALLOWED", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Endpoint string `json:"endpoint"`
+		Bucket   string `json:"bucket"`
+		Token    string `json:"token"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		WriteJSONError(w, r, "Bad request: invalid JSON payload", "ERR_BAD_REQUEST_BODY", http.StatusBadRequest)
+		return
+	}
+
+	if req.Endpoint == "" || req.Bucket == "" {
+		WriteJSONError(w, r, "Bad request: endpoint and bucket are required", "ERR_MISSING_FIELDS", http.StatusBadRequest)
+		return
+	}
+
+	s.engine.ConfigureOffloader(req.Endpoint, req.Bucket, req.Token)
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("WAL offloader configured successfully"))
 }
