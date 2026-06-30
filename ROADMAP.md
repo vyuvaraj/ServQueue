@@ -120,12 +120,10 @@ These create a **moat** around ServQueue — capabilities that Kafka, RabbitMQ, 
 
 ServQueue acts as the event backbone for proposed new components.
 
-| # | Item | Effort | Description | Status |
-|---|------|--------|-------------|--------|
-| 11.1 | **ServMail delivery channel** | Small | ServMail publishes failed notification deliveries to a DLQ topic for retry. Success/bounce events published for tracking. | [ ] |
-| 11.2 | **ServFlow step triggers** | Medium | ServFlow publishes step completion events to topics. Subscribe to workflow events for downstream reactions. | [ ] |
-| 11.3 | **ServFlow workflow triggers** | Medium | Publish to a topic to start a ServFlow workflow. Event-driven workflow initiation without direct API calls. | [ ] |
-| 11.4 | **ServAuth event stream** | Small | User registration, login, password reset events published to `auth.events` topic for audit and downstream processing. | [ ] |
+| 11.1 | **ServMail delivery channel** | Small | ServMail publishes failed notification deliveries to a DLQ topic for retry. Success/bounce events published for tracking. | [x] |
+| 11.2 | **ServFlow step triggers** | Medium | ServFlow publishes step completion events to topics. Subscribe to workflow events for downstream reactions. | [x] |
+| 11.3 | **ServFlow workflow triggers** | Medium | Publish to a topic to start a ServFlow workflow. Event-driven workflow initiation without direct API calls. | [x] |
+| 11.4 | **ServAuth event stream** | Small | User registration, login, password reset events published to `auth.events` topic for audit and downstream processing. | [x] |
 
 > See [UNIFIED_ROADMAP.md](../UNIFIED_ROADMAP.md) for the full ecosystem priority matrix and architectural recommendations.
 
