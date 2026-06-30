@@ -120,6 +120,11 @@ func (s *Server) namespaceTopic(topic string, tenant string) (string, error) {
 
 func (s *Server) tenantAndTokenMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		if s.authToken == "" {
 			tenant := s.getTenant(r)
 			ctx := context.WithValue(r.Context(), "tenant-id", tenant)
