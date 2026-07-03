@@ -46,6 +46,7 @@ func (s *Server) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", ServShared.HealthzHandler)
 	mux.HandleFunc("/readyz", ServShared.ReadyzHandler)
+	mux.HandleFunc("/api/version", ServShared.VersionHandler("servqueue", "1.0.0"))
 	mux.HandleFunc("/api/topics/", s.handleTopics)
 	mux.HandleFunc("/api/v1/topics/", s.handleTopics)
 	mux.HandleFunc("/api/topics", s.handleListTopics)
