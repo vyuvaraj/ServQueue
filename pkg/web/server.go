@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -51,6 +52,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/v1/topics", s.handleListTopics)
 	mux.HandleFunc("/api/publish", s.handlePublish)
 	mux.HandleFunc("/api/v1/publish", s.handlePublish)
+	mux.HandleFunc("/api/tail", s.handleTail)
+	mux.HandleFunc("/api/v1/tail", s.handleTail)
 	mux.HandleFunc("/api/stats", s.handleStats)
 	mux.HandleFunc("/api/v1/stats", s.handleStats)
 	mux.HandleFunc("/api/replay", s.handleReplay)
@@ -637,4 +640,52 @@ func (s *Server) handleConfigureOffloader(w http.ResponseWriter, r *http.Request
 	s.engine.ConfigureOffloader(req.Endpoint, req.Bucket, req.Token)
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("WAL offloader configured successfully"))
+}
+
+func (s *Server) handleTail(w http.ResponseWriter, r *http.Request) {
+	topic := r.URL.Query().Get("topic")
+	filterRegex := r.URL.Query().Get("filter")
+
+	if topic == "" {
+		http.Error(w, "Missing topic query parameter", http.StatusBadRequest)
+		return
+	}
+
+	tenant, _ := r.Context().Value("tenant-id").(string)
+	namespacedTopic, err := s.namespaceTopic(topic, tenant)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("[TAIL] Failed to upgrade websocket: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	ch := s.engine.Subscribe(namespacedTopic)
+	defer s.engine.Unsubscribe(namespacedTopic, ch)
+
+	var regex *regexp.Regexp
+	if filterRegex != "" {
+		if re, err := regexp.Compile(filterRegex); err == nil {
+			regex = re
+		}
+	}
+
+	for {
+		select {
+		case msg := <-ch:
+			if regex != nil && !regex.MatchString(msg) {
+				continue
+			}
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(msg)); err != nil {
+				return
+			}
+		case <-r.Context().Done():
+			return
+		}
+	}
 }

@@ -7,8 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 type TopicInfo struct {
@@ -79,6 +83,18 @@ func main() {
 		consumeFlag.Parse(args[2:])
 
 		consumeMessages(*serverAddr, *token, *tenant, topic, *group)
+	case "tail":
+		if len(args) < 2 {
+			fmt.Println("Error: tail requires a topic")
+			os.Exit(1)
+		}
+		topic := args[1]
+		
+		tailFlag := flag.NewFlagSet("tail", flag.ExitOnError)
+		filter := tailFlag.String("filter", "", "Regex filter for message payload")
+		tailFlag.Parse(args[2:])
+
+		tailMessages(*serverAddr, *token, *tenant, topic, *filter)
 	default:
 		fmt.Printf("Unknown command: %s\n", cmd)
 		printUsage()
@@ -99,6 +115,8 @@ func printUsage() {
 	fmt.Println("    [--ttl <duration>]            Specify TTL (e.g., 10s)")
 	fmt.Println("  consume <topic>                 Consume messages from a topic")
 	fmt.Println("    [--group <group>]             Consume as part of a consumer group")
+	fmt.Println("  tail <topic>                    Stream live messages from a topic")
+	fmt.Println("    [--filter <regex>]            Filter message payloads by regex")
 }
 
 func doRequest(method, urlStr, token, tenant string, body io.Reader) (*http.Response, error) {
@@ -254,5 +272,45 @@ func consumeMessages(server, token, tenant, topic, group string) {
 	fmt.Printf("Consumed %d messages from topic %s:\n", len(res.Records), res.Topic)
 	for i, r := range res.Records {
 		fmt.Printf("[%d] %s\n", i, r)
+	}
+}
+
+func tailMessages(serverAddr, token, tenant, topic, filterStr string) {
+	wsURL := strings.Replace(serverAddr, "http://", "ws://", 1)
+	wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
+	wsURL = fmt.Sprintf("%s/api/v1/tail?topic=%s", wsURL, url.QueryEscape(topic))
+	if filterStr != "" {
+		wsURL = fmt.Sprintf("%s&filter=%s", wsURL, url.QueryEscape(filterStr))
+	}
+
+	dialer := websocket.DefaultDialer
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+token)
+	if tenant != "" {
+		headers.Set("X-Tenant-ID", tenant)
+	}
+
+	conn, _, err := dialer.Dial(wsURL, headers)
+	if err != nil {
+		fmt.Printf("Failed to connect to tail stream: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	fmt.Printf("Streaming live messages from topic %s...\n", topic)
+	for {
+		_, message, err := conn.ReadMessage()
+		if err != nil {
+			fmt.Printf("Connection closed: %v\n", err)
+			break
+		}
+
+		var jsonObj interface{}
+		if err := json.Unmarshal(message, &jsonObj); err == nil {
+			pretty, _ := json.MarshalIndent(jsonObj, "", "  ")
+			fmt.Println(string(pretty))
+		} else {
+			fmt.Println(string(message))
+		}
 	}
 }
