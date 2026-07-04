@@ -1,4 +1,4 @@
-project_name: servqueue
+﻿project_name: servqueue
 version: 2
 
 before:
@@ -48,7 +48,7 @@ dockers:
   - image_templates:
       - "ghcr.io/vyuvaraj/servqueue:{{.Tag}}"
       - "ghcr.io/vyuvaraj/servqueue:latest"
-    dockerfile: Dockerfile
+    dockerfile: Dockerfile.goreleaser
     build_flag_templates:
       - "--label=org.opencontainers.image.title=ServQueue"
       - "--label=org.opencontainers.image.version={{.Version}}"
