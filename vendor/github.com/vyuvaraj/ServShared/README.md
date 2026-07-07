@@ -26,3 +26,10 @@ ServShared is the shared utility and middleware library powering core functions 
 ### 📊 OpenTelemetry Instrumentation (`otel.go`)
 - Trace context propagation (`traceparent` header parsing).
 - Trace log correlation and Prometheus metrics formatting.
+
+### 🔒 Distributed Lock Manager Client (`lock_client.go`)
+- `DistributedLocker` interface decoupling the registry implementation.
+- `HTTPLockClient` talking to ServMesh's lock APIs.
+- Mutual exclusion utility helpers (`WithLock`, `WithLockRetry`).
+- Mock/test-friendly `NoOpLocker`.
+

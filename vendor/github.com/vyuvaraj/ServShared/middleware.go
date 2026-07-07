@@ -1,17 +1,15 @@
 package ServShared
 
 import (
-	"crypto/rsa"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/vyuvaraj/ServShared/pkg/middleware"
 )
 
 // ContextKey is the type for context keys to avoid collisions.
@@ -19,168 +17,44 @@ type ContextKey string
 
 const (
 	// ClaimsContextKey is the context key for authenticated claims.
-	ClaimsContextKey ContextKey = "servverse-claims"
+	ClaimsContextKey ContextKey = ContextKey(middleware.ClaimsContextKey)
 	// TenantContextKey is the context key for the verified tenant ID.
-	TenantContextKey ContextKey = "servverse-tenant-id"
+	TenantContextKey ContextKey = ContextKey(middleware.TenantContextKey)
 )
 
 // GetClaims extracts claims from request context (set by AuthMiddleware).
 func GetClaims(r *http.Request) *Claims {
-	if c, ok := r.Context().Value(ClaimsContextKey).(*Claims); ok {
-		return c
+	mc := middleware.GetClaims(r)
+	if mc == nil {
+		return nil
 	}
-	return nil
+	// Map middleware.Claims to ServShared.Claims
+	return &Claims{
+		Username: mc.Username,
+		Roles:    mc.Roles,
+		Scopes:   mc.Scopes,
+		TenantID: mc.TenantID,
+	}
 }
 
 // GetTenantID extracts the verified tenant ID from request context (set by TenantMiddleware).
 // Always use this instead of reading X-Tenant-ID directly to ensure it has been verified.
 func GetTenantID(r *http.Request) string {
-	if tid, ok := r.Context().Value(TenantContextKey).(string); ok {
-		return tid
-	}
-	return ""
+	return middleware.GetTenantID(r)
 }
 
 // AuthMiddleware returns an HTTP middleware that enforces JWT auth.
-//
-// Behavior:
-//   - If SERV_JWT_SECRET is empty: all requests pass through (dev mode)
-//   - If SERV_JWT_SECRET is set: requires valid Bearer JWT on all routes
-//   - /healthz and /readyz are always allowed without auth
 func AuthMiddleware(next http.Handler) http.Handler {
-	secret := os.Getenv("SERV_JWT_SECRET")
-	jwksURL := os.Getenv("SERV_JWKS_URL")
-	if secret == "" && jwksURL == "" {
-		return next // dev mode — no auth enforced
-	}
-
-	validator := NewAuthValidator(secret, jwksURL, "")
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Always allow health probes without auth
-		path := r.URL.Path
-		if path == "/healthz" || path == "/readyz" || path == "/health" {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		// Extract token
-		token, err := ExtractTokenFromHeader(r.Header.Get("Authorization"))
-		if err != nil {
-			writeAuthError(w, http.StatusUnauthorized, "Unauthorized: "+err.Error(), "ERR_MISSING_AUTH")
-			return
-		}
-
-		// Validate
-		claims, err := validator.ValidateToken(token)
-		if err != nil {
-			writeAuthError(w, http.StatusUnauthorized, "Unauthorized: "+err.Error(), "ERR_INVALID_TOKEN")
-			return
-		}
-
-		// Inject claims into context
-		ctx := context.WithValue(r.Context(), ClaimsContextKey, claims)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+	return middleware.AuthMiddleware(next)
 }
 
 // TenantMiddleware enforces that the X-Tenant-ID request header matches the
-// tenant_id claim embedded in the verified JWT. This prevents callers from
-// impersonating tenants by forging the header.
-//
-// Behavior:
-//   - If no JWT is present in context (auth disabled / dev mode): falls back to
-//     X-Tenant-ID header value, defaulting to "default" if absent.
-//   - If JWT is present and has a tenant_id claim: X-Tenant-ID MUST match.
-//   - If JWT has no tenant_id claim (e.g. service tokens): X-Tenant-ID is
-//     accepted as-is (service tokens are implicitly trusted for any tenant).
-//   - The verified tenant ID is injected into context via TenantContextKey.
+// tenant_id claim embedded in the verified JWT.
 func TenantMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		headerTenant := r.Header.Get("X-Tenant-ID")
-		if headerTenant == "" {
-			headerTenant = "default"
-		}
-
-		claims := GetClaims(r)
-		verifiedTenant := headerTenant
-
-		if claims != nil && claims.TenantID != "" {
-			// Enforce: header must match JWT claim exactly.
-			if headerTenant != claims.TenantID {
-				writeAuthError(w, http.StatusForbidden,
-					"Forbidden: X-Tenant-ID does not match authenticated tenant",
-					"ERR_TENANT_MISMATCH")
-				return
-			}
-			verifiedTenant = claims.TenantID
-		}
-
-		// Inject verified tenant ID into context.
-		ctx := context.WithValue(r.Context(), TenantContextKey, verifiedTenant)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+	return middleware.TenantMiddleware(next)
 }
 
-// GenerateServiceToken creates a long-lived JWT for inter-service communication.
-// The token identifies the calling service and has the "service" role.
-func GenerateServiceToken(secret string, serviceName string) (string, error) {
-	if secret == "" {
-		return "", nil // dev mode — no token needed
-	}
 
-	claims := Claims{
-		Username: serviceName,
-		Roles:    []string{"service"},
-		Scopes:   []string{"*"},
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    "servverse",
-			Subject:   serviceName,
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(365 * 24 * time.Hour)),
-		},
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(secret))
-}
-
-// GenerateUserToken creates a JWT for a user with given roles and tenant.
-func GenerateUserToken(secret string, username string, roles []string, tenantID string, ttl time.Duration) (string, error) {
-	claims := Claims{
-		Username: username,
-		Roles:    roles,
-		TenantID: tenantID,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    "servverse",
-			Subject:   username,
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
-		},
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(secret))
-}
-
-// GenerateUserTokenRS256 creates a JWT signed with an RSA private key.
-func GenerateUserTokenRS256(privKey *rsa.PrivateKey, kid string, username string, roles []string, tenantID string, ttl time.Duration) (string, error) {
-	claims := Claims{
-		Username: username,
-		Roles:    roles,
-		TenantID: tenantID,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    "servverse",
-			Subject:   username,
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
-		},
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	token.Header["kid"] = kid
-	return token.SignedString(privKey)
-}
 
 // HasRole checks if the authenticated claims include a specific role.
 func HasRole(r *http.Request, role string) bool {
@@ -218,40 +92,7 @@ func (w *responseWriterWrapper) WriteHeader(code int) {
 
 // TraceMiddleware intercepts requests to create OTel spans and propagates trace headers
 func TraceMiddleware(serviceName string, next http.Handler) http.Handler {
-	InitTrace(serviceName)
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		traceparent := r.Header.Get("traceparent")
-		if traceparent == "" {
-			traceparent = r.Header.Get("X-Request-ID")
-		}
-
-		span := StartSpan(fmt.Sprintf("%s %s", r.Method, r.URL.Path), traceparent)
-		if span != nil {
-			span.Kind = 2 // Server span
-			tpVal := fmt.Sprintf("00-%s-%s-01", span.TraceID, span.SpanID)
-			r.Header.Set("traceparent", tpVal)
-		}
-
-		wrapper := &responseWriterWrapper{ResponseWriter: w, statusCode: http.StatusOK}
-
-		defer func() {
-			if span != nil {
-				attrs := map[string]interface{}{
-					"http.method":      r.Method,
-					"http.status_code": wrapper.statusCode,
-					"http.url":         r.URL.String(),
-				}
-				var err error
-				if wrapper.statusCode >= 400 {
-					err = fmt.Errorf("HTTP error status %d", wrapper.statusCode)
-				}
-				EndSpan(span, err, attrs)
-			}
-		}()
-
-		next.ServeHTTP(wrapper, r)
-	})
+	return middleware.TraceMiddleware(serviceName, next)
 }
 
 // LogJSON logs a message in structured JSON format, extracting trace ID from request context if available
@@ -331,18 +172,29 @@ func SanitizeLog(msg string) string {
 	})
 }
 
+var (
+	// IsolateTopicHook is dynamically injected by the Enterprise Edition module.
+	IsolateTopicHook func(ctx context.Context, topic string) string
+	// IsolateDBPoolHook is dynamically injected by the Enterprise Edition module.
+	IsolateDBPoolHook func(ctx context.Context, dbName string) string
+)
+
 // IsolateTopic prefixes a topic name with the tenant ID from context.
+// In OSS: returns the topic unchanged (single-tenant mode).
+// In EE: prefixes with tenant ID for multi-tenant isolation.
 func IsolateTopic(ctx context.Context, topic string) string {
-	if tid, ok := ctx.Value(TenantContextKey).(string); ok && tid != "" && tid != "default" {
-		return tid + "-" + topic
+	if IsolateTopicHook != nil {
+		return IsolateTopicHook(ctx, topic)
 	}
 	return topic
 }
 
 // IsolateDBPool prefixes database name with the tenant ID from context.
+// In OSS: returns the dbName unchanged (single-tenant mode).
+// In EE: prefixes with tenant ID for multi-tenant isolation.
 func IsolateDBPool(ctx context.Context, dbName string) string {
-	if tid, ok := ctx.Value(TenantContextKey).(string); ok && tid != "" && tid != "default" {
-		return tid + "_" + dbName
+	if IsolateDBPoolHook != nil {
+		return IsolateDBPoolHook(ctx, dbName)
 	}
 	return dbName
 }

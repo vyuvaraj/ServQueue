@@ -40,9 +40,10 @@ github.com/tetratelabs/wazero/internal/wasm/binary
 github.com/tetratelabs/wazero/internal/wasmdebug
 github.com/tetratelabs/wazero/internal/wasmruntime
 github.com/tetratelabs/wazero/sys
-# github.com/vyuvaraj/ServShared v0.0.0-20260704093242-8fad9c11efe5
+# github.com/vyuvaraj/ServShared v0.1.1-0.20260707055944-17bb1291bf6d
 ## explicit; go 1.26.4
 github.com/vyuvaraj/ServShared
+github.com/vyuvaraj/ServShared/pkg/middleware
 # golang.org/x/sys v0.44.0
 ## explicit; go 1.25.0
 golang.org/x/sys/cpu
