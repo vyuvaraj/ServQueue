@@ -262,6 +262,14 @@ func (e *BrokerEngine) dispatchLoop(ctx context.Context, topic string, pq *Prior
 			e.mu.RUnlock()
 
 			for _, sub := range subs {
+				// AI.24: Semantic message routing filter
+				if strings.Contains(topic, "support") {
+					isBilling := strings.Contains(strings.ToLower(msg.Payload), "billing") || strings.Contains(strings.ToLower(msg.Payload), "invoice")
+					if isBilling && !strings.Contains(topic, "billing") {
+						continue
+					}
+				}
+
 				select {
 				case sub <- msg.Payload:
 				default:
