@@ -6,3 +6,5 @@ vendor/
 queue.wal
 .wazero-cache-servqueue/
 **/wazero-cache-servqueue/
+*_ee.go
+*_ee_test.go

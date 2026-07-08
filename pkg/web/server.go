@@ -228,12 +228,48 @@ func (s *Server) handleTopics(w http.ResponseWriter, r *http.Request) {
 	case "transform":
 		s.handleRegisterTransform(w, r, namespacedTopic)
 	case "dlq":
-		s.handleRegisterDLQ(w, r, namespacedTopic)
+		if len(parts) >= 6 && parts[1] == "v1" && parts[5] == "summary" {
+			s.handleDLQSummary(w, r, namespacedTopic)
+		} else if len(parts) >= 5 && parts[1] != "v1" && parts[4] == "summary" {
+			s.handleDLQSummary(w, r, namespacedTopic)
+		} else {
+			s.handleRegisterDLQ(w, r, namespacedTopic)
+		}
 	case "schema":
 		s.handleRegisterSchema(w, r, namespacedTopic)
+	case "anomalies":
+		s.handleAnomalies(w, r, namespacedTopic)
 	default:
 		WriteJSONError(w, r, "Not found", "ERR_NOT_FOUND", http.StatusNotFound)
 	}
+}
+
+func (s *Server) handleDLQSummary(w http.ResponseWriter, r *http.Request, topic string) {
+	if r.Method != http.MethodGet {
+		WriteJSONError(w, r, "Method not allowed", "ERR_METHOD_NOT_ALLOWED", http.StatusMethodNotAllowed)
+		return
+	}
+	summary, err := s.engine.SummarizeDLQ(topic)
+	if err != nil {
+		WriteJSONError(w, r, err.Error(), "ERR_INTERNAL_SERVER_ERROR", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(summary)
+}
+
+func (s *Server) handleAnomalies(w http.ResponseWriter, r *http.Request, topic string) {
+	if r.Method != http.MethodGet {
+		WriteJSONError(w, r, "Method not allowed", "ERR_METHOD_NOT_ALLOWED", http.StatusMethodNotAllowed)
+		return
+	}
+	anomalies, err := s.engine.DetectMessageAnomalies(topic)
+	if err != nil {
+		WriteJSONError(w, r, err.Error(), "ERR_INTERNAL_SERVER_ERROR", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(anomalies)
 }
 
 func (s *Server) handleRegisterSchema(w http.ResponseWriter, r *http.Request, topic string) {
