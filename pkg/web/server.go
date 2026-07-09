@@ -231,23 +231,25 @@ func (s *Server) handleTopics(w http.ResponseWriter, r *http.Request) {
 		s.handleRegisterTransform(w, r, namespacedTopic)
 	case "dlq":
 		if len(parts) >= 6 && parts[1] == "v1" {
-			if parts[5] == "summary" {
+			switch parts[5] {
+			case "summary":
 				s.handleDLQSummary(w, r, namespacedTopic)
-			} else if parts[5] == "triage" {
+			case "triage":
 				s.handleDLQTriage(w, r, namespacedTopic)
-			} else if parts[5] == "requeue" {
+			case "requeue":
 				s.handleDLQRequeue(w, r, namespacedTopic)
-			} else {
+			default:
 				s.handleRegisterDLQ(w, r, namespacedTopic)
 			}
 		} else if len(parts) >= 5 && parts[1] != "v1" {
-			if parts[4] == "summary" {
+			switch parts[4] {
+			case "summary":
 				s.handleDLQSummary(w, r, namespacedTopic)
-			} else if parts[4] == "triage" {
+			case "triage":
 				s.handleDLQTriage(w, r, namespacedTopic)
-			} else if parts[4] == "requeue" {
+			case "requeue":
 				s.handleDLQRequeue(w, r, namespacedTopic)
-			} else {
+			default:
 				s.handleRegisterDLQ(w, r, namespacedTopic)
 			}
 		} else {
