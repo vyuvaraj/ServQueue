@@ -4,7 +4,7 @@ github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aN
 github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
 github.com/tetratelabs/wazero v1.12.0 h1:DuWcpNu/FzgEXgGBDp8J1Spc+CWOvvtvVyjKlaZopYU=
 github.com/tetratelabs/wazero v1.12.0/go.mod h1:LvKtzl2RqO4gyF27BiXU+nKAjcV8f38U+kP/q2vgxh0=
-github.com/vyuvaraj/ServShared v0.1.1-0.20260707062556-f2bd3a534e96 h1:1wFqTATSVv7WgirU3S39zKsGx7M+QWMIk772xt6CWfE=
-github.com/vyuvaraj/ServShared v0.1.1-0.20260707062556-f2bd3a534e96/go.mod h1:quYZYsX/CJFhifDhhhpf3H32EZAov8SX+5eGC8wb5dI=
+github.com/vyuvaraj/ServShared v0.1.1-0.20260709055203-a69c44124438 h1:to34m5s5B1CNpO+QLve5a1yCBkCv2hTYHrJfAhor9wI=
+github.com/vyuvaraj/ServShared v0.1.1-0.20260709055203-a69c44124438/go.mod h1:quYZYsX/CJFhifDhhhpf3H32EZAov8SX+5eGC8wb5dI=
 golang.org/x/sys v0.44.0 h1:ildZl3J4uzeKP07r2F++Op7E9B29JRUy+a27EibtBTQ=
 golang.org/x/sys v0.44.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
