@@ -1197,6 +1197,51 @@ func TestEndToEndMessageTracing(t *testing.T) {
 	}
 }
 
+func TestEventSourcingEndpoints(t *testing.T) {
+	_ = os.RemoveAll("events")
+	defer os.RemoveAll("events")
+
+	engine := broker.NewBrokerEngine()
+	webServer := web.NewServer("127.0.0.1:8089", engine, "", "", "")
+	go webServer.Start()
+	defer webServer.Shutdown(context.Background())
+	time.Sleep(200 * time.Millisecond)
+
+	payload := `{"type":"OrderPlaced","payload":"{\"orderId\":123,\"amount\":99.99}"}`
+	resp, err := http.Post("http://127.0.0.1:8089/api/v1/events/orders", "application/json", strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("Failed to emit event: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("Expected status 201 Created, got %d", resp.StatusCode)
+	}
+
+	respLatest, err := http.Get("http://127.0.0.1:8089/api/v1/events/orders/latest")
+	if err != nil {
+		t.Fatalf("Failed to fetch latest: %v", err)
+	}
+	defer respLatest.Body.Close()
+	var latest map[string]interface{}
+	json.NewDecoder(respLatest.Body).Decode(&latest)
+	if seq := latest["seq"]; seq != float64(1) {
+		t.Errorf("Expected seq 1, got %v", seq)
+	}
+
+	respReplay, err := http.Get("http://127.0.0.1:8089/api/v1/events/orders?from=1")
+	if err != nil {
+		t.Fatalf("Failed to replay: %v", err)
+	}
+	defer respReplay.Body.Close()
+	var list []web.Event
+	json.NewDecoder(respReplay.Body).Decode(&list)
+	if len(list) != 1 {
+		t.Errorf("Expected 1 event, got %d", len(list))
+	} else if list[0].Type != "OrderPlaced" {
+		t.Errorf("Expected event Type OrderPlaced, got %s", list[0].Type)
+	}
+}
+
 
 
 

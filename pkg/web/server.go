@@ -50,6 +50,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/version", ServShared.VersionHandler("servqueue", "1.0.0"))
 	mux.HandleFunc("/api/topics/", s.handleTopics)
 	mux.HandleFunc("/api/v1/topics/", s.handleTopics)
+	mux.HandleFunc("/api/v1/events/", s.handleEvents)
 	mux.HandleFunc("/api/topics", s.handleListTopics)
 	mux.HandleFunc("/api/v1/topics", s.handleListTopics)
 	mux.HandleFunc("/api/publish", s.handlePublish)
