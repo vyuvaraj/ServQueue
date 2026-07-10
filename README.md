@@ -47,6 +47,13 @@ go build -o servqueue.exe main.go
 * The **STOMP TCP Server** listens on `:61613`
 * The **HTTP Management API** listens on `:8082`
 
+> [!IMPORTANT]
+> **Default Authentication Credentials:**
+> - **Username**: `admin`
+> - **Password**: `secret`
+> These credentials must be passed in the headers of your STOMP frames (e.g. `login: admin`, `passcode: secret`) or REST operations.
+
+
 ### 2. HTTP Admin API Usage
 
 #### Publish a Message
