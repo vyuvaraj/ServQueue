@@ -1,5 +1,9 @@
 # ServQueue
 
+```bash
+docker run -p 8082:8082 -p 61613:61613 ghcr.io/vyuvaraj/servqueue:latest
+```
+
 `ServQueue` is a lightweight, distributed-ready message broker tailored for the **Serv** ecosystem. Its primary differentiating feature is **Compute-in-Queue** (Native WASM Stream Processing): the ability to run lightweight, compiled WebAssembly (WASI) modules inline inside the messaging pipeline to filter, enrich, or transform payloads dynamically before they reach subscribers.
 
 ---
