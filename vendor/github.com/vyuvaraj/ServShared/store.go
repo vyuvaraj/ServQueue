@@ -152,3 +152,27 @@ func (c *StoreClient) SemanticSearch(bucket, query string, limit int) ([]string,
 	}
 	return results, nil
 }
+
+// Delete deletes an object from a bucket and key in ServStore.
+func (c *StoreClient) Delete(bucket, key string) error {
+	urlStr := fmt.Sprintf("%s/%s/%s", c.Endpoint, bucket, key)
+	req, err := http.NewRequest("DELETE", urlStr, nil)
+	if err != nil {
+		return err
+	}
+	if c.AuthToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.AuthToken)
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to delete from ServStore (%d): %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
